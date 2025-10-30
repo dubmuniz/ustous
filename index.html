@@ -7,11 +7,8 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet">
-  <!-- PDF.js -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
-  <!-- Mammoth (DOCX) -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js"></script>
-  <!-- docx UMD -->
   <script src="https://cdn.jsdelivr.net/npm/docx@8.5.0/build/index.umd.js"></script>
   <style>
     :root{--green:#1E7E34;--ink:#1b1b1b;--bg:#fafafa;--muted:#667085}
@@ -73,7 +70,6 @@
 
   <script>
     const WEBHOOK_URL = 'https://hook.us2.make.com/7whb778vlmgg9yst3o5ua2cq4g4dh654';
-
     const $ = (s)=>document.querySelector(s);
     const sanitize = (s)=> (s==null?'':String(s).replace(/\uFEFF/g,'').replace(/[\u0000-\u001F\u007F-\u009F]/g,'').replace(/\r?\n/g,' ').replace(/\s+/g,' ').trim());
 
@@ -95,6 +91,7 @@
       if(name.endsWith('.docx')||name.endsWith('.doc')) return readDOCX(file);
       return sanitize(await file.text());
     }
+
     function stripFences(s){
       if(!s) return '';
       let t = String(s).trim();
@@ -108,47 +105,104 @@
       try{ return JSON.parse(t); }catch(e){ return null; }
     }
 
-    // Normalizador para garantir preenchimento total
-    function normalizeUs(data, contexto, oque){
-      const us = (data && data.us_to_us) ? data.us_to_us : {};
-      const val = (v, fallback='')=> sanitize(v || fallback);
-      const longify = (txt, backup)=> {
-        const base = sanitize(txt||'');
-        if(base && base.split(' ').length >= 40) return base; // ~120-180 palavras virá do LLM; se curto, alonga com backup
-        const b = sanitize(backup||'');
-        if(!base && b) return b;
-        return base || b || 'Texto não fornecido.';
-      };
-      const bullets = (arr)=> Array.isArray(arr) && arr.length ? arr.map(sanitize) : [
-        'Engajamento comunitário e mapeamento participativo',
-        'Formações temáticas e oficinas práticas',
-        'Produção de materiais e guia replicável',
-        'Monitoramento e avaliação com indicadores simples'
+    // ==== Extratores simples do edital ====
+    function extractPartner(edital){
+      const txt = (edital||'').toLowerCase();
+      const hits = [
+        ...txt.matchAll(/\b(fundação oswaldo cruz|fiocruz|national geographic|banco mundial|unesco|unicef|pnud|giz|bid|bndes|ministério [a-zçãé ]+)\b/gi)
       ];
+      return hits.length? capitalize(hits[0][0]) : '';
+    }
+    function extractGrant(edital){
+      const m = (edital||'').match(/(R\$\s?[\d\.\,]+|\bUS\$?\s?[\d\.\,]+|€\s?[\d\.\,]+)\s*(mil(hões)?|k)?/i);
+      return m? m[0].replace(/\s{2,}/g,' ') : '';
+    }
+    function extractTimeframe(edital){
+      const m = (edital||'').match(/\b(\d{1,2})\s*(mes(es)?|month[s]?|m)\b/i);
+      return m? `${m[1]} meses` : '12 meses';
+    }
+    function extractDeadline(edital){
+      const m = (edital||'').match(/\b(\d{1,2}\/\d{1,2}\/\d{2,4}|\d{1,2}\s+de\s+\w+\s+de\s+\d{4})\b/i);
+      return m? m[0] : '';
+    }
+    function summarizeCall(edital){
+      const t = sanitize(edital||'').split(' ').slice(0,180).join(' ');
+      return t || 'Resumo do edital com base no arquivo enviado.';
+    }
+    function partnerWants(edital){
+      const txt = sanitize(edital||'');
+      const cand = (txt.match(/(objetivo|finalidade|visa|busca|prop[oó]sito)[^\.]{40,200}\./i)||[])[0];
+      if(cand) return cand;
+      return 'O parceiro busca propostas com alinhamento a impacto mensurável, viabilidade técnica e orçamentária, e capacidade de execução com foco em resultados.';
+    }
+    function capitalize(s){
+      return s? s.replace(/\b\p{L}/gu, c=>c.toUpperCase()) : s;
+    }
+
+    // ==== “Alongador” de texto (120–180 palavras) ====
+    function expandText(base, extra){
+      const seed = sanitize(base)||'';
+      const sup = sanitize(extra)||'';
+      const src = seed || sup || '';
+      if(!src) return 'Texto não fornecido.';
+      const words = src.split(' ');
+      if(words.length >= 120) return src;
+      // alonga com complementos dedutivos
+      const add = [
+        ' O plano considera coordenação intersetorial, participação ativa de escolas e lideranças locais, e mecanismos de transparência.',
+        ' Metodologias participativas e dados abertos fortalecem aprendizagem, corresponsabilidade e replicabilidade.',
+        ' A gestão de riscos inclui cronograma realista, governança clara, e rotinas de monitoramento com indicadores.',
+        ' Resultados serão comunicados por meio de relatórios acessíveis, materiais didáticos e devolutivas públicas no território.'
+      ];
+      let out = src;
+      for(const s of add){ if(out.split(' ').length<180) out += s; }
+      return out;
+    }
+
+    // ==== Normalizador inteligente ====
+    function normalizeUs(data, contexto, oque, edital, ficha){
+      const us = (data && data.us_to_us) ? data.us_to_us : {};
+      const partner = sanitize(us.partner || extractPartner(edital) || 'Parceiro');
+      const grant = sanitize(us.grant_size || extractGrant(edital) || 'A definir conforme edital');
+      const timeframe = sanitize(us.timeframe || extractTimeframe(edital));
+      const deadline = sanitize(us.deadline || extractDeadline(edital));
+
+      const background = expandText(us.background, contexto);
+      const summary_call = expandText(us.summary_call, summarizeCall(edital));
+      const partner_wants_txt = expandText(us.partner_wants, partnerWants(edital));
+      const general_description = expandText(us.general_description, oque);
+      const age_gender = sanitize(us.age_gender || 'Participação de estudantes do ensino fundamental e médio, com garantia de inclusão e equidade de gênero.');
+      const training_how = expandText(us.training_how, 'Formações híbridas com oficinas práticas, trilhas interpretativas e projetos orientados por produtos, acompanhadas por tutoria.');
+
+      const main_activities = Array.isArray(us.main_activities) && us.main_activities.length
+        ? us.main_activities.map(sanitize)
+        : [
+            'Mapeamento participativo e diagnóstico rápido com escolas e comunidades',
+            'Formações temáticas em ciência cidadã, biodiversidade urbana e produção audiovisual',
+            'Implementação de hortas pedagógicas, sensores de microclima e protocolos de observação',
+            'Produção de guia didático, exposição fotográfica e minidocumentário por estudantes'
+          ];
+
+      const people_should_do = expandText(us.people_should_do, 'Estudantes e docentes realizarão coletas de dados, registros fotográficos e relatos, aplicando protocolos simples e seguros.');
+      const organize_productive_unit = expandText(us.organize_productive_unit, 'Estrutura em células por escola, com apoio técnico, calendário de entregas e logística compartilhada.');
+      const organize_people = expandText(us.organize_people, 'Comitê de governança com papéis definidos, rotinas quinzenais, e comunicação via ferramenta colaborativa.');
+      const economy = expandText(us.economy, 'Orçamento prioriza materiais pedagógicos, kits de sensores, formação de multiplicadores, comunicação e gestão.');
+      const technical_instructions = expandText(us.technical_instructions, 'Padrões de dados abertos; consentimento informado; checklists de segurança para saídas de campo; backup em nuvem.');
 
       return {
         us_to_us:{
-          meta: { filename: 'us_to_us', partner: val(us.meta?.partner || us.partner || '') },
-          partner: val(us.partner || ''),
-          grant_size: val(us.grant_size || 'A definir conforme edital'),
-          timeframe: val(us.timeframe || '12 meses'),
-          deadline: val(us.deadline || ''),
-          background: longify(us.background, contexto),
-          summary_call: longify(us.summary_call, 'Resumo do edital com base no arquivo enviado.'),
-          partner_wants: longify(us.partner_wants, ''),
-          general_description: longify(us.general_description, oque),
-          age_gender: val(us.age_gender || ''),
-          training_how: longify(us.training_how, ''),
-          main_activities: bullets(us.main_activities),
-          people_should_do: longify(us.people_should_do, ''),
-          organize_productive_unit: longify(us.organize_productive_unit, ''),
-          organize_people: longify(us.organize_people, ''),
-          economy: longify(us.economy, ''),
-          technical_instructions: longify(us.technical_instructions, '')
+          meta:{ filename:'us_to_us', partner },
+          partner, grant_size:grant, timeframe, deadline,
+          background, summary_call, partner_wants:partner_wants_txt,
+          general_description, age_gender, training_how,
+          main_activities,
+          people_should_do, organize_productive_unit, organize_people,
+          economy, technical_instructions
         }
       };
     }
 
+    // ==== DOCX ====
     const H = docx.HeadingLevel;
     const P = (t,opts={})=> new docx.Paragraph({text:t||'',...opts});
     const H1 = (t)=> P(t,{heading:H.HEADING_1});
@@ -156,7 +210,7 @@
 
     function makeDocx(data){
       const d = data.us_to_us;
-      const doc = new docx.Document({
+      return new docx.Document({
         sections:[{properties:{},children:[
           H1(`De Nós para Nós — ${d.partner||'Parceiro'}`), P(''),
           H2('Parceiro'), P(d.partner||''),
@@ -169,8 +223,7 @@
           H2('4. Descrição Geral do que Queremos Fazer'), P(d.general_description||''),
           H2('Faixa Etária e Gênero'), P(d.age_gender||''),
           H2('Como Faremos as Formações?'), P(d.training_how||''),
-          H2('5. Atividades Principais'),
-          ...(Array.isArray(d.main_activities)? d.main_activities.map(x=>P('• '+x)) : []),
+          H2('5. Atividades Principais'), ...(d.main_activities||[]).map(x=>P('• '+x)),
           H2('6. O que as Pessoas Farão'), P(d.people_should_do||''),
           H2('7. Como Organizaremos a Unidade Produtiva (inclui organograma)'), P(d.organize_productive_unit||''),
           H2('8. Como Organizaremos as Pessoas no Projeto (inclui ilustração)'), P(d.organize_people||''),
@@ -178,8 +231,8 @@
           H2('11. Instruções Técnicas (opcional)'), P(d.technical_instructions||'')
         ]}]
       });
-      return doc;
     }
+
     async function saveDocx(doc, filename){
       const blob = await docx.Packer.toBlob(doc);
       const url = URL.createObjectURL(blob);
@@ -187,6 +240,7 @@
       document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
     }
 
+    // ==== UI / submit ====
     const fichaFile = $('#fichaFile'), editalFile = $('#editalFile');
     const fichaInfo = $('#fichaInfo'), editalInfo = $('#editalInfo');
     const statusEl = $('#status'), debugEl = $('#debug'), submitBtn = $('#submitBtn');
@@ -237,7 +291,9 @@
 
         statusEl.textContent='Interpretando resposta...';
         const parsed = parseClaude(text);
-        const safe = normalizeUs(parsed, payload.contexto, payload.o_que_queremos_fazer);
+
+        // normalização INTELIGENTE: sempre preenche
+        const safe = normalizeUs(parsed, payload.contexto, payload.o_que_queremos_fazer, payload.edital, payload.ficha);
 
         statusEl.textContent='Gerando DOCX...';
         const doc = makeDocx(safe);
@@ -258,5 +314,4 @@
   </script>
 </body>
 </html>
-
 
