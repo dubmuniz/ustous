@@ -9,9 +9,8 @@
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet">
   <!-- PDF.js -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
-  <!-- Mammoth (com fallback automático) -->
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js"
-          onerror="var s=document.createElement('script');s.src='https://cdn.jsdelivr.net/npm/mammoth@1.6.0/mammoth.browser.min.js';document.head.appendChild(s);"></script>
+  <!-- Mammoth (DOCX) -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js"></script>
   <!-- docx UMD -->
   <script src="https://cdn.jsdelivr.net/npm/docx@8.5.0/build/index.umd.js"></script>
   <style>
@@ -73,23 +72,10 @@
   </main>
 
   <script>
-    // Webhook do Make
     const WEBHOOK_URL = 'https://hook.us2.make.com/7whb778vlmgg9yst3o5ua2cq4g4dh654';
 
-    const $ = (sel)=>document.querySelector(sel);
+    const $ = (s)=>document.querySelector(s);
     const sanitize = (s)=> (s==null?'':String(s).replace(/\uFEFF/g,'').replace(/[\u0000-\u001F\u007F-\u009F]/g,'').replace(/\r?\n/g,' ').replace(/\s+/g,' ').trim());
-
-    // Garante que mammoth esteja carregado, com fallback se necessário
-    function ensureMammoth(){
-      return new Promise((resolve)=>{
-        if (window.mammoth) return resolve();
-        const tryLoad = ()=>{
-          if (window.mammoth) resolve();
-          else setTimeout(tryLoad, 100);
-        };
-        tryLoad();
-      });
-    }
 
     async function readPDF(file){
       const arr = await file.arrayBuffer();
@@ -99,7 +85,6 @@
       return sanitize(text);
     }
     async function readDOCX(file){
-      await ensureMammoth();
       const arr = await file.arrayBuffer();
       const res = await mammoth.extractRawText({arrayBuffer:arr});
       return sanitize(res.value);
@@ -110,7 +95,6 @@
       if(name.endsWith('.docx')||name.endsWith('.doc')) return readDOCX(file);
       return sanitize(await file.text());
     }
-
     function stripFences(s){
       if(!s) return '';
       let t = String(s).trim();
@@ -124,73 +108,83 @@
       try{ return JSON.parse(t); }catch(e){ return null; }
     }
 
+    // Normalizador para garantir preenchimento total
+    function normalizeUs(data, contexto, oque){
+      const us = (data && data.us_to_us) ? data.us_to_us : {};
+      const val = (v, fallback='')=> sanitize(v || fallback);
+      const longify = (txt, backup)=> {
+        const base = sanitize(txt||'');
+        if(base && base.split(' ').length >= 40) return base; // ~120-180 palavras virá do LLM; se curto, alonga com backup
+        const b = sanitize(backup||'');
+        if(!base && b) return b;
+        return base || b || 'Texto não fornecido.';
+      };
+      const bullets = (arr)=> Array.isArray(arr) && arr.length ? arr.map(sanitize) : [
+        'Engajamento comunitário e mapeamento participativo',
+        'Formações temáticas e oficinas práticas',
+        'Produção de materiais e guia replicável',
+        'Monitoramento e avaliação com indicadores simples'
+      ];
+
+      return {
+        us_to_us:{
+          meta: { filename: 'us_to_us', partner: val(us.meta?.partner || us.partner || '') },
+          partner: val(us.partner || ''),
+          grant_size: val(us.grant_size || 'A definir conforme edital'),
+          timeframe: val(us.timeframe || '12 meses'),
+          deadline: val(us.deadline || ''),
+          background: longify(us.background, contexto),
+          summary_call: longify(us.summary_call, 'Resumo do edital com base no arquivo enviado.'),
+          partner_wants: longify(us.partner_wants, ''),
+          general_description: longify(us.general_description, oque),
+          age_gender: val(us.age_gender || ''),
+          training_how: longify(us.training_how, ''),
+          main_activities: bullets(us.main_activities),
+          people_should_do: longify(us.people_should_do, ''),
+          organize_productive_unit: longify(us.organize_productive_unit, ''),
+          organize_people: longify(us.organize_people, ''),
+          economy: longify(us.economy, ''),
+          technical_instructions: longify(us.technical_instructions, '')
+        }
+      };
+    }
+
     const H = docx.HeadingLevel;
-    function p(txt, opts={}){ return new docx.Paragraph({text:txt||'', ...opts}); }
-    function h1(txt){ return p(txt,{heading:H.HEADING_1}); }
-    function h2(txt){ return p(txt,{heading:H.HEADING_2}); }
+    const P = (t,opts={})=> new docx.Paragraph({text:t||'',...opts});
+    const H1 = (t)=> P(t,{heading:H.HEADING_1});
+    const H2 = (t)=> P(t,{heading:H.HEADING_2});
 
     function makeDocx(data){
-      const d = data?.us_to_us || {};
-      const meta = d.meta || {};
-      const partner = sanitize(d.partner||meta.partner||'');
-      const grant = sanitize(d.grant_size||'');
-      const timeframe = sanitize(d.timeframe||'');
-      const deadline = sanitize(d.deadline||'');
-
-      const background = sanitize(d.background||'');
-      const summary = sanitize(d.summary_call||'');
-      const partner_wants = sanitize(d.partner_wants||'');
-      const general = sanitize(d.general_description||'');
-      const age_gender = sanitize(d.age_gender||'');
-      const training_how = sanitize(d.training_how||'');
-      const main_activities = Array.isArray(d.main_activities)?d.main_activities.map(sanitize):[];
-      const people_should_do = sanitize(d.people_should_do||'');
-      const organize_unit = sanitize(d.organize_productive_unit||'');
-      const organize_people = sanitize(d.organize_people||'');
-      const economy = sanitize(d.economy||'');
-      const technical = sanitize(d.technical_instructions||'');
-
+      const d = data.us_to_us;
       const doc = new docx.Document({
-        sections:[{
-          properties:{},
-          children:[
-            h1(`De Nós para Nós — ${partner||'Parceiro'}`),
-            p(''),
-            h2('Parceiro'), p(partner||''),
-            h2('Tamanho da Subvenção'), p(grant||''),
-            h2('Prazo de Execução'), p(timeframe||''),
-            h2('Prazo de Submissão'), p(deadline||''),
-            p(''),
-
-            h2('1. Contexto'), p(background||''),
-            h2('2. Resumo do Edital / Oportunidade'), p(summary||''),
-            h2('3. O que o Parceiro Busca'), p(partner_wants||''),
-            h2('4. Descrição Geral do que Queremos Fazer'), p(general||''),
-            h2('Faixa Etária e Gênero'), p(age_gender||''),
-            h2('Como Faremos as Formações?'), p(training_how||''),
-
-            h2('5. Atividades Principais'),
-            ...(main_activities.length? main_activities.map(txt=>p('• '+txt)) : [p('')]),
-
-            h2('6. O que as Pessoas Farão'), p(people_should_do||''),
-            h2('7. Como Organizaremos a Unidade Produtiva (inclui organograma)'), p(organize_unit||''),
-            h2('8. Como Organizaremos as Pessoas no Projeto (inclui ilustração)'), p(organize_people||''),
-
-            h2('10. Orçamento (linhas principais, contrapartidas e soluções)'), p(economy||''),
-            h2('11. Instruções Técnicas (opcional)'), p(technical||'')
-          ]
-        }]
+        sections:[{properties:{},children:[
+          H1(`De Nós para Nós — ${d.partner||'Parceiro'}`), P(''),
+          H2('Parceiro'), P(d.partner||''),
+          H2('Tamanho da Subvenção'), P(d.grant_size||''),
+          H2('Prazo de Execução'), P(d.timeframe||''),
+          H2('Prazo de Submissão'), P(d.deadline||''), P(''),
+          H2('1. Contexto'), P(d.background||''),
+          H2('2. Resumo do Edital / Oportunidade'), P(d.summary_call||''),
+          H2('3. O que o Parceiro Busca'), P(d.partner_wants||''),
+          H2('4. Descrição Geral do que Queremos Fazer'), P(d.general_description||''),
+          H2('Faixa Etária e Gênero'), P(d.age_gender||''),
+          H2('Como Faremos as Formações?'), P(d.training_how||''),
+          H2('5. Atividades Principais'),
+          ...(Array.isArray(d.main_activities)? d.main_activities.map(x=>P('• '+x)) : []),
+          H2('6. O que as Pessoas Farão'), P(d.people_should_do||''),
+          H2('7. Como Organizaremos a Unidade Produtiva (inclui organograma)'), P(d.organize_productive_unit||''),
+          H2('8. Como Organizaremos as Pessoas no Projeto (inclui ilustração)'), P(d.organize_people||''),
+          H2('10. Orçamento (linhas principais, contrapartidas e soluções)'), P(d.economy||''),
+          H2('11. Instruções Técnicas (opcional)'), P(d.technical_instructions||'')
+        ]}]
       });
       return doc;
     }
-
     async function saveDocx(doc, filename){
       const blob = await docx.Packer.toBlob(doc);
       const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url; a.download = filename || ('US_to_US_'+Date.now()+'.docx');
-      document.body.appendChild(a); a.click(); a.remove();
-      URL.revokeObjectURL(url);
+      const a = document.createElement('a'); a.href=url; a.download = filename || ('US_to_US_'+Date.now()+'.docx');
+      document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
     }
 
     const fichaFile = $('#fichaFile'), editalFile = $('#editalFile');
@@ -200,21 +194,16 @@
     fichaFile.addEventListener('change', async ()=>{
       fichaInfo.style.display='none';
       if(!fichaFile.files[0]) return;
-      fichaInfo.textContent = 'Lendo arquivo...'; fichaInfo.style.display='block';
-      try{
-        const txt = await readAny(fichaFile.files[0]);
-        fichaInfo.textContent = `✓ ${fichaFile.files[0].name} carregado (${(txt.length/1024).toFixed(1)} KB texto)`;
-      }catch(e){ fichaInfo.textContent='Erro ao ler o arquivo'; }
+      fichaInfo.textContent='Lendo arquivo...'; fichaInfo.style.display='block';
+      try{ const txt=await readAny(fichaFile.files[0]); fichaInfo.textContent=`✓ ${fichaFile.files[0].name} carregado (${(txt.length/1024).toFixed(1)} KB texto)`; }
+      catch{ fichaInfo.textContent='Erro ao ler o arquivo'; }
     });
-
     editalFile.addEventListener('change', async ()=>{
       editalInfo.style.display='none';
       if(!editalFile.files[0]) return;
-      editalInfo.textContent = 'Lendo arquivo...'; editalInfo.style.display='block';
-      try{
-        const txt = await readAny(editalFile.files[0]);
-        editalInfo.textContent = `✓ ${editalFile.files[0].name} carregado (${(txt.length/1024).toFixed(1)} KB texto)`;
-      }catch(e){ editalInfo.textContent='Erro ao ler o arquivo'; }
+      editalInfo.textContent='Lendo arquivo...'; editalInfo.style.display='block';
+      try{ const txt=await readAny(editalFile.files[0]); editalInfo.textContent=`✓ ${editalFile.files[0].name} carregado (${(txt.length/1024).toFixed(1)} KB texto)`; }
+      catch{ editalInfo.textContent='Erro ao ler o arquivo'; }
     });
 
     document.getElementById('usForm').addEventListener('submit', async (e)=>{
@@ -230,11 +219,10 @@
 
       try{
         submitBtn.disabled=true; statusEl.textContent='Lendo arquivos...';
-
         const fichaTxt = await readAny(fichaFile.files[0]);
         const editalTxt = await readAny(editalFile.files[0]);
 
-        const limit = (s,max)=> s.length>max ? (s.slice(0,max)+'... [truncado]') : s;
+        const limit = (s,m)=> s.length>m ? (s.slice(0,m)+'... [truncado]') : s;
         const payload = {
           ficha: limit(fichaTxt, 60000),
           edital: limit(editalTxt, 60000),
@@ -243,38 +231,13 @@
         };
 
         statusEl.textContent='Enviando para processamento...';
-        const resp = await fetch(WEBHOOK_URL,{
-          method:'POST',
-          headers:{'Content-Type':'application/json','Accept':'application/json, text/plain'},
-          body: JSON.stringify(payload)
-        });
+        const resp = await fetch(WEBHOOK_URL,{method:'POST',headers:{'Content-Type':'application/json','Accept':'application/json, text/plain'},body:JSON.stringify(payload)});
         const text = await resp.text();
         if(!resp.ok) throw new Error(`HTTP ${resp.status} ${resp.statusText} | ${text.slice(0,600)}`);
 
         statusEl.textContent='Interpretando resposta...';
-        const data = parseClaude(text);
-
-        const safe = data && data.us_to_us ? data : {
-          us_to_us:{
-            meta:{partner:''},
-            partner:'',
-            grant_size:'',
-            timeframe:'12 meses',
-            deadline:'',
-            background: payload.contexto,
-            summary_call: 'Resumo do edital a partir do arquivo enviado.',
-            partner_wants: '',
-            general_description: payload.o_que_queremos_fazer,
-            age_gender: '',
-            training_how: '',
-            main_activities: [],
-            people_should_do:'',
-            organize_productive_unit:'',
-            organize_people:'',
-            economy:'',
-            technical_instructions:''
-          }
-        };
+        const parsed = parseClaude(text);
+        const safe = normalizeUs(parsed, payload.contexto, payload.o_que_queremos_fazer);
 
         statusEl.textContent='Gerando DOCX...';
         const doc = makeDocx(safe);
@@ -295,4 +258,5 @@
   </script>
 </body>
 </html>
+
 
