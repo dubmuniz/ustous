@@ -7,8 +7,12 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet">
+  <!-- PDF.js -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.min.js"></script>
+  <!-- Mammoth (com fallback automático) -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js"
+          onerror="var s=document.createElement('script');s.src='https://cdn.jsdelivr.net/npm/mammoth@1.6.0/mammoth.browser.min.js';document.head.appendChild(s);"></script>
+  <!-- docx UMD -->
   <script src="https://cdn.jsdelivr.net/npm/docx@8.5.0/build/index.umd.js"></script>
   <style>
     :root{--green:#1E7E34;--ink:#1b1b1b;--bg:#fafafa;--muted:#667085}
@@ -69,12 +73,23 @@
   </main>
 
   <script>
-    // ====== CONFIGURE SEU WEBHOOK DO MAKE ======
+    // Webhook do Make
     const WEBHOOK_URL = 'https://hook.us2.make.com/7whb778vlmgg9yst3o5ua2cq4g4dh654';
 
-    // ====== UTIL ======
     const $ = (sel)=>document.querySelector(sel);
     const sanitize = (s)=> (s==null?'':String(s).replace(/\uFEFF/g,'').replace(/[\u0000-\u001F\u007F-\u009F]/g,'').replace(/\r?\n/g,' ').replace(/\s+/g,' ').trim());
+
+    // Garante que mammoth esteja carregado, com fallback se necessário
+    function ensureMammoth(){
+      return new Promise((resolve)=>{
+        if (window.mammoth) return resolve();
+        const tryLoad = ()=>{
+          if (window.mammoth) resolve();
+          else setTimeout(tryLoad, 100);
+        };
+        tryLoad();
+      });
+    }
 
     async function readPDF(file){
       const arr = await file.arrayBuffer();
@@ -84,6 +99,7 @@
       return sanitize(text);
     }
     async function readDOCX(file){
+      await ensureMammoth();
       const arr = await file.arrayBuffer();
       const res = await mammoth.extractRawText({arrayBuffer:arr});
       return sanitize(res.value);
@@ -94,6 +110,7 @@
       if(name.endsWith('.docx')||name.endsWith('.doc')) return readDOCX(file);
       return sanitize(await file.text());
     }
+
     function stripFences(s){
       if(!s) return '';
       let t = String(s).trim();
@@ -107,13 +124,12 @@
       try{ return JSON.parse(t); }catch(e){ return null; }
     }
 
-    // ====== DOCX (títulos PT-BR mapeados) ======
     const H = docx.HeadingLevel;
     function p(txt, opts={}){ return new docx.Paragraph({text:txt||'', ...opts}); }
     function h1(txt){ return p(txt,{heading:H.HEADING_1}); }
     function h2(txt){ return p(txt,{heading:H.HEADING_2}); }
+
     function makeDocx(data){
-      // Campos esperados do Claude (ou norm fallback)
       const d = data?.us_to_us || {};
       const meta = d.meta || {};
       const partner = sanitize(d.partner||meta.partner||'');
@@ -167,6 +183,7 @@
       });
       return doc;
     }
+
     async function saveDocx(doc, filename){
       const blob = await docx.Packer.toBlob(doc);
       const url = URL.createObjectURL(blob);
@@ -176,7 +193,6 @@
       URL.revokeObjectURL(url);
     }
 
-    // ====== UI/Handlers ======
     const fichaFile = $('#fichaFile'), editalFile = $('#editalFile');
     const fichaInfo = $('#fichaInfo'), editalInfo = $('#editalInfo');
     const statusEl = $('#status'), debugEl = $('#debug'), submitBtn = $('#submitBtn');
@@ -190,6 +206,7 @@
         fichaInfo.textContent = `✓ ${fichaFile.files[0].name} carregado (${(txt.length/1024).toFixed(1)} KB texto)`;
       }catch(e){ fichaInfo.textContent='Erro ao ler o arquivo'; }
     });
+
     editalFile.addEventListener('change', async ()=>{
       editalInfo.style.display='none';
       if(!editalFile.files[0]) return;
@@ -217,7 +234,6 @@
         const fichaTxt = await readAny(fichaFile.files[0]);
         const editalTxt = await readAny(editalFile.files[0]);
 
-        // Limita tamanho para evitar corte no Make
         const limit = (s,max)=> s.length>max ? (s.slice(0,max)+'... [truncado]') : s;
         const payload = {
           ficha: limit(fichaTxt, 60000),
@@ -238,15 +254,15 @@
         statusEl.textContent='Interpretando resposta...';
         const data = parseClaude(text);
 
-        // Fallback mínimo se a IA não retornar JSON válido
         const safe = data && data.us_to_us ? data : {
           us_to_us:{
+            meta:{partner:''},
             partner:'',
             grant_size:'',
             timeframe:'12 meses',
             deadline:'',
             background: payload.contexto,
-            summary_call: 'Resumo do edital com base no arquivo enviado.',
+            summary_call: 'Resumo do edital a partir do arquivo enviado.',
             partner_wants: '',
             general_description: payload.o_que_queremos_fazer,
             age_gender: '',
@@ -279,3 +295,4 @@
   </script>
 </body>
 </html>
+
