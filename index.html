@@ -101,14 +101,17 @@
       .replace(/\s+/g,' ')
       .trim());
 
-    async function safeFetch(url, opts={}){
+    // fetch com timeout configurável
+    async function safeFetch(url, opts = {}, timeoutMs = 20000){
       const ctrl = new AbortController();
-      const to = setTimeout(()=>ctrl.abort(), 20000);
+      const to = setTimeout(()=>ctrl.abort(), timeoutMs);
       try{
-        const resp = await fetch(url, {...opts, signal: ctrl.signal});
+        const resp = await fetch(url, { ...opts, signal: ctrl.signal });
         const text = await resp.text();
         return { ok: resp.ok, status: resp.status, statusText: resp.statusText, headers: resp.headers, text };
-      } finally { clearTimeout(to); }
+      } finally {
+        clearTimeout(to);
+      }
     }
 
     // ===== FILE READERS =====
@@ -162,7 +165,7 @@
       s = s.replace(/(\.{3,}|_{3,}|-{3,})/g,' ');
       s = s.replace(/\b(frequently asked questions|faqs?|application process|apply now|grants? portal|character limits?|full application template|eligibility|budget guidelines?|terms of use|privacy policy|login|portal)\b[\s\S]{0,2000}/gi,' ');
       s = s.replace(/\b(sumário|índice|conteúdo)\b[\s\S]{0,2000}/gi,' ');
-      s = s.replace(/^\s*\d+(\.\d+)*\s+[^\.]{3,80}\.{3,}\s*\d+\s*$/gim,' '); // linhas de índice com pontilhado
+      s = s.replace(/^\s*\d+(\.\d+)*\s+[^\.]{3,80}\.{3,}\s*\d+\s*$/gim,' ');
       s = s.replace(/[A-ZÁÂÃÀÉÊÍÓÔÕÚÇ]{4,}(?:\s+[A-ZÁÂÃÀÉÊÍÓÔÕÚÇ]{3,})+/g, m => m.toLowerCase());
       s = s.replace(/\s+/g,' ').trim();
       return s.slice(0,120000);
@@ -190,20 +193,19 @@
       const encoded = encodeURIComponent(topic.replace(/\s+/g,'_'));
       const url = `https://pt.wikipedia.org/api/rest_v1/page/summary/${encoded}`;
       try{
-        const {ok, text} = await safeFetch(url);
+        const {ok, text} = await safeFetch(url, {}, 8000);
         if(!ok) return '';
         const j = JSON.parse(text);
         return sanitize(j.extract || '');
       }catch{ return ''; }
     }
 
-    // ===== PROMPT BUILDER (VARIAÇÃO REAL POR ESTILO) =====
+    // ===== PROMPT BUILDER =====
     function buildPrompt(field, ficha, editalClean, webCtx, seed){
       const fichaKw = keywords(ficha, 12).join(', ');
       const editalKw = keywords(editalClean, 12).join(', ');
       const s = typeof seed==='number'? seed : Date.now();
-      const style = s % 4; // 0..3
-
+      const style = s % 4;
       const styleGuide = [
         'Estilo 0: diagnóstico, em seguida detalhe, depois implicação prática. Frases médias, coesão sem jargão.',
         'Estilo 1: pequena vinheta situacional, depois dados qualitativos, por fim síntese operacional.',
@@ -239,7 +241,7 @@ Saída OBRIGATÓRIA, JSON em uma linha:
       const oque =
 `Tarefa: gerar "O que queremos fazer" com 150–200 palavras. Derivar objetivos, público-alvo, atividades, método,
 entregas e indicadores plausíveis a partir da FICHA e coerentes com o EDITAL_LIMPO. Trazer 3–5 entregas e uma lógica
-de trabalho do tipo descoberta → prototipagem → implementação → síntese. Não repetir frases do Contexto.
+de trabalho do tipo descoberta, prototipagem, implementação, síntese. Não repetir frases do Contexto.
 
 Saída OBRIGATÓRIA, JSON em uma linha:
 {"suggest":{"field":"oque","text":"TEXTO FINAL"}}`;
@@ -286,11 +288,15 @@ Saída OBRIGATÓRIA, JSON em uma linha:
         const prompt = buildPrompt(field, fichaTxt, editalTxt, webCtx, seed);
 
         hint.textContent='Gerando com IA...';
-        const { ok, status, statusText, headers, text } = await safeFetch(AUTOCOMPLETE_WEBHOOK_URL, {
-          method:'POST',
-          headers:{'Content-Type':'application/json','Accept':'application/json, text/plain'},
-          body: JSON.stringify({ field, prompt }) // Make só repassa isso ao Claude
-        });
+        const { ok, status, statusText, headers, text } = await safeFetch(
+          AUTOCOMPLETE_WEBHOOK_URL,
+          {
+            method:'POST',
+            headers:{'Content-Type':'application/json','Accept':'application/json, text/plain'},
+            body: JSON.stringify({ field, prompt })
+          },
+          60000
+        );
 
         $('#debug').textContent = `AUTOCOMPLETE status: ${status} ${statusText}
 content-type: ${headers.get('content-type')||''}
@@ -311,7 +317,7 @@ ${text.slice(0,1000)}`;
         hint.textContent = 'Sugestão aplicada.';
       }catch(err){
         const target = field==='contexto' ? $('#aiContextoHint') : $('#aiOqueHint');
-        target.textContent = 'Sugestão indisponível';
+        target.textContent = err && err.name==='AbortError' ? 'Timeout. Tente novamente.' : 'Sugestão indisponível';
         $('#debug').textContent = String(err);
         show($('#debug'));
         console.error(err);
@@ -373,7 +379,7 @@ ${text.slice(0,1000)}`;
       catch{ el.textContent='Erro ao ler o arquivo'; }
     });
 
-    // SUBMIT → webhook principal (gera DOCX via backend que você já tem)
+    // SUBMIT → webhook principal
     document.getElementById('usForm').addEventListener('submit', async (e)=>{
       e.preventDefault();
       hide($('#debug'));
@@ -403,10 +409,11 @@ ${text.slice(0,1000)}`;
         };
 
         statusEl.textContent='Enviando para processamento...';
-        const { ok, status, statusText, text } = await safeFetch(WEBHOOK_URL,{
-          method:'POST', headers:{'Content-Type':'application/json','Accept':'application/json, text/plain'},
-          body: JSON.stringify(payload)
-        });
+        const { ok, status, statusText, text } = await safeFetch(
+          WEBHOOK_URL,
+          { method:'POST', headers:{'Content-Type':'application/json','Accept':'application/json, text/plain'}, body: JSON.stringify(payload) },
+          120000
+        );
         if(!ok) throw new Error(`HTTP ${status} ${statusText} | ${text.slice(0,600)}`);
 
         statusEl.textContent='Interpretando resposta...';
@@ -429,7 +436,9 @@ ${text.slice(0,1000)}`;
         statusEl.textContent='✓ Documento gerado';
         statusEl.classList.add('success');
       }catch(err){
-        statusEl.textContent='Erro: '+err.message;
+        statusEl.textContent = (err && err.name==='AbortError')
+          ? 'Erro: tempo de resposta excedido.'
+          : 'Erro: ' + (err.message || String(err));
         statusEl.classList.add('error');
         $('#debug').textContent = String(err);
         show($('#debug'));
@@ -441,7 +450,6 @@ ${text.slice(0,1000)}`;
   </script>
 </body>
 </html>
-
 
 
 
