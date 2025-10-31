@@ -81,12 +81,10 @@
 
   <script>
     // ===== CONFIG =====
-    // Webhook principal que gera o DOCX
-    const WEBHOOK_URL = 'https://hook.us2.make.com/7whb778vlmgg9yst3o5ua2cq4g4dh654';
-    // Webhook do AUTOCOMPLETE fornecido por você
-    let AUTOCOMPLETE_WEBHOOK_URL = 'https://hook.us2.make.com/w6gspd8kkiuai5v3aqe5dzb3c5xvcwvr';
+    const WEBHOOK_URL = 'https://hook.us2.make.com/7whb778vlmgg9yst3o5ua2cq4g4dh654'; // fluxo principal (gera DOCX)
+    let AUTOCOMPLETE_WEBHOOK_URL = 'https://hook.us2.make.com/w6gspd8kkiuai5v3aqe5dzb3c5xvcwvr'; // autocomplete
 
-    // Utilitários para eventualmente trocar o webhook sem editar código
+    // Permite override via query param ?auto=
     function getParam(name){ const m = new URLSearchParams(location.search).get(name); return m ? decodeURIComponent(m) : ''; }
     const overrideAuto = getParam('auto'); if(overrideAuto) AUTOCOMPLETE_WEBHOOK_URL = overrideAuto;
 
@@ -211,7 +209,7 @@
       return out;
     }
 
-    function normalizeUs(data, contexto, oque, edital, ficha){
+    function normalizeUs(data, contexto, oque, edital){
       const us = (data && data.us_to_us) ? data.us_to_us : {};
       const partner = sanitize(us.partner || extractPartner(edital) || 'Parceiro');
       const grant = sanitize(us.grant_size || extractGrant(edital) || 'A definir conforme edital');
@@ -310,7 +308,7 @@
       catch{ editalInfo.textContent='Erro ao ler o arquivo'; }
     });
 
-    // ===== AUTOCOMPLETE =====
+    // ===== AUTOCOMPLETE COM GUIA DIFERENCIADO =====
     async function aiSuggest(field){
       const hint = field==='contexto' ? $('#aiContextoHint') : $('#aiOqueHint');
       hide(debugEl);
@@ -326,7 +324,18 @@
         const fichaTxt = f ? await readAny(f) : '';
         const editalTxt = e ? await readAny(e) : '';
 
-        const payload = { ficha: fichaTxt.slice(0,60000), edital: editalTxt.slice(0,60000), field, max_words: 180 };
+        const guidance = (field === 'contexto')
+          ? 'Você vai escrever a seção "Contexto". Foque no território: demografia, segurança pública, infraestrutura urbana, acesso a serviços, aspectos socioeconômicos e ambientais. Use apenas o que encontrar na Ficha e no Edital. Não invente números. Se faltar dado, descreva qualitativamente o cenário com precisão. Evite listas. Estilo técnico e objetivo, coerente com o edital.'
+          : 'Você vai escrever a seção "O que queremos fazer". Descreva objetivos, público-alvo, escopo de atividades, metodologia, entregas, governança e indicadores de resultado esperados. Conecte explicitamente com as demandas do edital e com a Ficha. Evite listas. Estilo técnico e direto, focado em viabilidade e impacto.';
+
+        const payload = {
+          ficha: fichaTxt.slice(0,60000),
+          edital: editalTxt.slice(0,60000),
+          field,
+          guidance,
+          max_words: (field === 'contexto') ? 220 : 180
+        };
+
         const { ok, status, statusText, headers, text } = await safeFetch(AUTOCOMPLETE_WEBHOOK_URL, {
           method:'POST',
           headers:{'Content-Type':'application/json','Accept':'application/json, text/plain'},
@@ -340,7 +349,10 @@ ${text.slice(0,1000)}`;
         show(debugEl);
 
         if(!ok){ hint.textContent = 'Sugestão indisponível'; return; }
-        if(String(text).trim().toLowerCase()==='accepted'){ hint.textContent = 'Sugestão indisponível. Configure o Webhook response no Make para devolver o corpo JSON.'; return; }
+        if(String(text).trim().toLowerCase()==='accepted'){
+          hint.textContent = 'Sugestão indisponível. Configure o Webhook response no Make para devolver o corpo JSON.';
+          return;
+        }
 
         const data = parseSuggest(text);
         const out = sanitize(data?.suggest?.text || '');
@@ -403,7 +415,7 @@ ${text.slice(0,1000)}`;
           if(idx>=0) parsed = JSON.parse(respText.slice(idx));
         }
 
-        const safe = normalizeUs(parsed, payload.contexto, payload.o_que_queremos_fazer, payload.edital, payload.ficha);
+        const safe = normalizeUs(parsed, payload.contexto, payload.o_que_queremos_fazer, payload.edital);
 
         statusEl.textContent='Gerando DOCX...';
         const doc = makeDocx(safe);
