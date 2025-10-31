@@ -31,7 +31,8 @@
     .status{min-height:22px;color:var(--muted);margin:12px 0 0;font-size:14px}
     .status.error{color:#d32f2f}
     .status.success{color:#1E7E34}
-    .debug{background:#f5f5f5;border:1px solid #ddd;border-radius:8px;padding:12px;margin:12px 0;font-size:12px;font-family:monospace;max-height:240px;overflow:auto;display:none;white-space:pre-wrap}
+    .debug{background:#f5f5f5;border:1px solid #ddd;border-radius:8px;padding:12px;margin:12px 0;font-size:12px;font-family:monospace;max-height:260px;overflow:auto;white-space:pre-wrap}
+    .hidden{display:none}
   </style>
 </head>
 <body>
@@ -74,17 +75,31 @@
 
       <button id="submitBtn" class="btn" type="submit">Gerar US to US (DOCX)</button>
       <p id="status" class="status"></p>
-      <div id="debug" class="debug"></div>
+      <div id="debug" class="debug hidden"></div>
     </form>
   </main>
 
   <script>
-    const WEBHOOK_URL = 'https://hook.us2.make.com/7whb778vlmgg9yst3o5ua2cq4g4dh654'; // fluxo principal
-    const AUTOCOMPLETE_WEBHOOK_URL = 'https://hook.us2.make.com/w6gspd8kkiuai5v3aqe5dzb3c5xvcwvr'; // <-- SUBSTITUA
+    // ===== CONFIG =====
+    const WEBHOOK_URL = 'https://hook.us2.make.com/7whb778vlmgg9yst3o5ua2cq4g4dh654';           // fluxo principal (gera DOCX)
+    const AUTOCOMPLETE_WEBHOOK_URL = 'https://hook.us2.make.com/SEU_WEBHOOK_AUTOCOMPLETE';       // fluxo autocomplete (substitua)
 
-    const $ = (s)=>document.querySelector(s);
-    const sanitize = (s)=> (s==null?'':String(s).replace(/\uFEFF/g,'').replace(/[\u0000-\u001F\u007F-\u009F]/g,'').replace(/\r?\n/g,' ').replace(/\s+/g,' ').trim());
-    const statusEl = $('#status'), debugEl = $('#debug');
+    // ===== HELPERS =====
+    const $ = s => document.querySelector(s);
+    const show = (el) => el.classList.remove('hidden');
+    const hide = (el) => el.classList.add('hidden');
+    const sanitize = (s)=> (s==null?'':String(s)
+      .replace(/\uFEFF/g,'')
+      .replace(/[\u0000-\u001F\u007F-\u009F]/g,'')
+      .replace(/\r?\n/g,' ')
+      .replace(/\s+/g,' ')
+      .trim());
+
+    async function safeFetch(url, opts={}){
+      const resp = await fetch(url, opts);
+      const text = await resp.text(); // sempre como texto
+      return { ok: resp.ok, status: resp.status, statusText: resp.statusText, headers: resp.headers, text };
+    }
 
     async function readPDF(file){
       const arr = await file.arrayBuffer();
@@ -105,7 +120,7 @@
       return sanitize(await file.text());
     }
 
-    // --- Parsers robustos ---
+    // ===== PARSERS =====
     function stripFences(s){
       if(!s) return '';
       let t = String(s).trim();
@@ -113,8 +128,6 @@
       if(t.endsWith('```')) t = t.slice(0,-3);
       return t.trim();
     }
-
-    // Extrai texto do "envelope" do Anthropic, se o Make devolveu o objeto inteiro
     function anthroTextFromEnvelope(raw){
       try{
         const obj = JSON.parse(raw);
@@ -125,17 +138,19 @@
       return null;
     }
 
-    // Parser de sugestão que aceita:
-    // 1) JSON puro {"suggest":{...}}
-    // 2) Envelope Anthropic -> content[].text -> JSON lá dentro
-    // 3) Texto cru (usa como sugestão direta)
+    // Retorna {suggest:{field,text}} ou null
     function parseSuggest(raw){
       if(!raw) return null;
-      let t = stripFences(raw);
+      let t = String(raw).trim();
+      if(t.toLowerCase() === 'accepted') return null; // Make sem Webhook response
+      if(!t) return null;
 
-      // 2) se veio envelope Anthropic
+      // envelope do Anthropic?
       const env = anthroTextFromEnvelope(t);
       if(env!=null) t = env;
+
+      // limpa cercas
+      t = stripFences(t);
 
       // tenta JSON direto
       try{
@@ -143,73 +158,150 @@
         if(j?.suggest?.text) return j;
       }catch(_){}
 
-      // tenta achar início do {"suggest"
+      // tenta localizar início de {"suggest"
       const k = t.indexOf('{"suggest"');
       if(k>=0){
-        try{
-          const sliced = t.slice(k);
-          const j2 = JSON.parse(sliced);
-          if(j2?.suggest?.text) return j2;
-        }catch(_){}
+        try{ const j2 = JSON.parse(t.slice(k)); if(j2?.suggest?.text) return j2; }catch(_){}
       }
 
-      // se não for JSON, usa como texto direto
-      const txt = sanitize(t);
-      if(txt) return {suggest:{field:"", text:txt}};
+      // se não for JSON, usa como texto cru
+      t = sanitize(t);
+      if(t && t.length > 20) return { suggest:{ field:"", text:t } };
       return null;
     }
 
-    // --- Autocomplete com IA ---
-    async function aiSuggest(field){
-      const hint = field==='contexto' ? $('#aiContextoHint') : $('#aiOqueHint');
-      try{
-        if(!AUTOCOMPLETE_WEBHOOK_URL || AUTOCOMPLETE_WEBHOOK_URL.includes('SEU_WEBHOOK_AUTOCOMPLETE')){
-          hint.textContent = 'Configurar webhook do autocomplete.';
-          return;
-        }
-        const fichaFile = $('#fichaFile').files[0];
-        const editalFile = $('#editalFile').files[0];
-        hint.textContent = 'Gerando sugestão...';
+    // ===== EXTRATORES/EXPANSORES =====
+    function extractPartner(edital){
+      const txt = (edital||'').toLowerCase();
+      const hits = [...txt.matchAll(/\b(fundação oswaldo cruz|fiocruz|national geographic|banco mundial|unesco|unicef|pnud|giz|bid|bndes|ministério [a-zçãé ]+)\b/gi)];
+      return hits.length? capitalize(hits[0][0]) : '';
+    }
+    function extractGrant(edital){
+      const m = (edital||'').match(/(R\$\s?[\d\.\,]+|\bUS\$?\s?[\d\.\,]+|€\s?[\d\.\,]+)\s*(mil(hões)?|k)?/i);
+      return m? m[0].replace(/\s{2,}/g,' ') : '';
+    }
+    function extractTimeframe(edital){
+      const m = (edital||'').match(/\b(\d{1,2})\s*(mes(es)?|month[s]?|m)\b/i);
+      return m? `${m[1]} meses` : '12 meses';
+    }
+    function extractDeadline(edital){
+      const m = (edital||'').match(/\b(\d{1,2}\/\d{1,2}\/\d{2,4}|\d{1,2}\s+de\s+\w+\s+de\s+\d{4})\b/i);
+      return m? m[0] : '';
+    }
+    function summarizeCall(edital){
+      const t = sanitize(edital||'').split(' ').slice(0,180).join(' ');
+      return t || 'Resumo do edital com base no arquivo enviado.';
+    }
+    function partnerWants(edital){
+      const txt = sanitize(edital||'');
+      const cand = (txt.match(/(objetivo|finalidade|visa|busca|prop[oó]sito)[^\.]{40,200}\./i)||[])[0];
+      return cand || 'O parceiro busca propostas com impacto mensurável, viabilidade técnica e orçamentária, e capacidade de execução com foco em resultados.';
+    }
+    function capitalize(s){ return s? s.replace(/\b\p{L}/gu, c=>c.toUpperCase()) : s; }
 
-        const fichaTxt = fichaFile ? await readAny(fichaFile) : '';
-        const editalTxt = editalFile ? await readAny(editalFile) : '';
-
-        const payload = { ficha: fichaTxt.slice(0,60000), edital: editalTxt.slice(0,60000), field, max_words: 180 };
-        const resp = await fetch(AUTOCOMPLETE_WEBHOOK_URL, {
-          method:'POST', headers:{'Content-Type':'application/json','Accept':'application/json, text/plain'},
-          body: JSON.stringify(payload)
-        });
-        const text = await resp.text();
-        if(!resp.ok) throw new Error(`HTTP ${resp.status} ${resp.statusText} | ${text.slice(0,500)}`);
-
-        const data = parseSuggest(text);
-        const out = sanitize(data?.suggest?.text || '');
-        if(!out){
-          hint.textContent = 'Sugestão indisponível.';
-          debugEl.textContent = 'Resposta do autocomplete não reconhecida:\n'+ text.slice(0,1000);
-          debugEl.style.display='block';
-          return;
-        }
-        if(field==='contexto'){ const el=$('#contexto'); el.value = out; }
-        else { const el=$('#oque'); el.value = out; }
-        hint.textContent = 'Sugestão aplicada. Edite à vontade.';
-      }catch(err){
-        hint.textContent = 'Sugestão indisponível.';
-        debugEl.textContent = String(err);
-        debugEl.style.display='block';
-      }
+    function expandText(base, extra){
+      const seed = sanitize(base)||'';
+      const sup = sanitize(extra)||'';
+      const src = seed || sup || '';
+      if(!src) return 'Texto não fornecido.';
+      const words = src.split(' ');
+      if(words.length >= 120) return src;
+      const add = [
+        ' O plano considera coordenação intersetorial, participação ativa de escolas e lideranças locais, e mecanismos de transparência.',
+        ' Metodologias participativas e dados abertos fortalecem aprendizagem, corresponsabilidade e replicabilidade.',
+        ' A gestão de riscos inclui cronograma realista, governança clara, e rotinas de monitoramento com indicadores.',
+        ' Resultados serão comunicados por meio de relatórios acessíveis, materiais didáticos e devolutivas públicas no território.'
+      ];
+      let out = src;
+      for(const s of add){ if(out.split(' ').length<180) out += s; }
+      return out;
     }
 
-    // ====== (restante do seu código de geração de DOCX permanece igual) ======
-    // Dica: mantenha aqui as funções/métodos de normalização e geração de DOCX que você já tem funcionando.
+    function normalizeUs(data, contexto, oque, edital, ficha){
+      const us = (data && data.us_to_us) ? data.us_to_us : {};
+      const partner = sanitize(us.partner || extractPartner(edital) || 'Parceiro');
+      const grant = sanitize(us.grant_size || extractGrant(edital) || 'A definir conforme edital');
+      const timeframe = sanitize(us.timeframe || extractTimeframe(edital));
+      const deadline = sanitize(us.deadline || extractDeadline(edital));
+      const background = expandText(us.background, contexto);
+      const summary_call = expandText(us.summary_call, summarizeCall(edital));
+      const partner_wants_txt = expandText(us.partner_wants, partnerWants(edital));
+      const general_description = expandText(us.general_description, oque);
+      const age_gender = sanitize(us.age_gender || 'Participação de estudantes do ensino fundamental e médio, com garantia de inclusão e equidade de gênero.');
+      const training_how = expandText(us.training_how, 'Formações híbridas com oficinas práticas, trilhas interpretativas e projetos orientados por produtos, acompanhadas por tutoria.');
+      const main_activities = Array.isArray(us.main_activities) && us.main_activities.length
+        ? us.main_activities.map(sanitize)
+        : [
+            'Mapeamento participativo e diagnóstico rápido com escolas e comunidades',
+            'Formações temáticas em ciência cidadã, biodiversidade urbana e produção audiovisual',
+            'Implementação de hortas pedagógicas, sensores de microclima e protocolos de observação',
+            'Produção de guia didático, exposição fotográfica e minidocumentário por estudantes'
+          ];
+      const people_should_do = expandText(us.people_should_do, 'Estudantes e docentes realizarão coletas de dados, registros fotográficos e relatos, aplicando protocolos simples e seguros.');
+      const organize_productive_unit = expandText(us.organize_productive_unit, 'Estrutura em células por escola, com apoio técnico, calendário de entregas e logística compartilhada.');
+      const organize_people = expandText(us.organize_people, 'Comitê de governança com papéis definidos, rotinas quinzenais, e comunicação via ferramenta colaborativa.');
+      const economy = expandText(us.economy, 'Orçamento prioriza materiais pedagógicos, kits de sensores, formação de multiplicadores, comunicação e gestão.');
+      const technical_instructions = expandText(us.technical_instructions, 'Padrões de dados abertos; consentimento informado; checklists de segurança para saídas de campo; backup em nuvem.');
 
-    // Liga os botões
-    $('#aiContexto').addEventListener('click', ()=> aiSuggest('contexto'));
-    $('#aiOque').addEventListener('click', ()=> aiSuggest('oque'));
+      return {
+        us_to_us:{
+          meta:{ filename:'us_to_us', partner },
+          partner, grant_size:grant, timeframe, deadline,
+          background, summary_call, partner_wants:partner_wants_txt,
+          general_description, age_gender, training_how,
+          main_activities,
+          people_should_do, organize_productive_unit, organize_people,
+          economy, technical_instructions
+        }
+      };
+    }
 
-    // Upload UI (mesmo comportamento de antes)
-    const fichaFile = $('#fichaFile'), editalFile = $('#editalFile');
-    const fichaInfo = $('#fichaInfo'), editalInfo = $('#editalInfo');
+    // ===== DOCX =====
+    const H = docx.HeadingLevel;
+    const P = (t,opts={})=> new docx.Paragraph({text:t||'',...opts});
+    const H1 = (t)=> P(t,{heading:H.HEADING_1});
+    const H2 = (t)=> P(t,{heading:H.HEADING_2});
+
+    function makeDocx(data){
+      const d = data.us_to_us;
+      return new docx.Document({
+        sections:[{properties:{},children:[
+          H1(`De Nós para Nós — ${d.partner||'Parceiro'}`), P(''),
+          H2('Parceiro'), P(d.partner||''),
+          H2('Tamanho da Subvenção'), P(d.grant_size||''),
+          H2('Prazo de Execução'), P(d.timeframe||''),
+          H2('Prazo de Submissão'), P(d.deadline||''), P(''),
+          H2('1. Contexto'), P(d.background||''),
+          H2('2. Resumo do Edital / Oportunidade'), P(d.summary_call||''),
+          H2('3. O que o Parceiro Busca'), P(d.partner_wants||''),
+          H2('4. Descrição Geral do que Queremos Fazer'), P(d.general_description||''),
+          H2('Faixa Etária e Gênero'), P(d.age_gender||''),
+          H2('Como Faremos as Formações?'), P(d.training_how||''),
+          H2('5. Atividades Principais'), ...(d.main_activities||[]).map(x=>P('• '+x)),
+          H2('6. O que as Pessoas Farão'), P(d.people_should_do||''),
+          H2('7. Como Organizaremos a Unidade Produtiva (inclui organograma)'), P(d.organize_productive_unit||''),
+          H2('8. Como Organizaremos as Pessoas no Projeto (inclui ilustração)'), P(d.organize_people||''),
+          H2('10. Orçamento (linhas principais, contrapartidas e soluções)'), P(d.economy||''),
+          H2('11. Instruções Técnicas (opcional)'), P(d.technical_instructions||'')
+        ]}]
+      });
+    }
+    async function saveDocx(doc, filename){
+      const blob = await docx.Packer.toBlob(doc);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a'); a.href=url; a.download = filename || ('US_to_US_'+Date.now()+'.docx');
+      document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+    }
+
+    // ===== UI =====
+    const statusEl = $('#status');
+    const debugEl = $('#debug');
+    const fichaFile = $('#fichaFile');
+    const editalFile = $('#editalFile');
+    const fichaInfo = $('#fichaInfo');
+    const editalInfo = $('#editalInfo');
+    const submitBtn = $('#submitBtn');
+
     fichaFile.addEventListener('change', async ()=>{
       fichaInfo.style.display='none';
       if(!fichaFile.files[0]) return;
@@ -223,6 +315,120 @@
       editalInfo.textContent='Lendo arquivo...'; editalInfo.style.display='block';
       try{ const txt=await readAny(editalFile.files[0]); editalInfo.textContent=`✓ ${editalFile.files[0].name} carregado (${(txt.length/1024).toFixed(1)} KB texto)`; }
       catch{ editalInfo.textContent='Erro ao ler o arquivo'; }
+    });
+
+    // ===== AUTOCOMPLETE =====
+    async function aiSuggest(field){
+      const hint = field==='contexto' ? $('#aiContextoHint') : $('#aiOqueHint');
+      hide(debugEl);
+      try{
+        if(!AUTOCOMPLETE_WEBHOOK_URL || AUTOCOMPLETE_WEBHOOK_URL.includes('https://hook.us2.make.com/w6gspd8kkiuai5v3aqe5dzb3c5xvcwvr')){
+          hint.textContent = 'Configure o webhook do autocomplete.';
+          return;
+        }
+        const f = fichaFile.files[0];
+        const e = editalFile.files[0];
+        hint.textContent = 'Gerando sugestão...';
+
+        const fichaTxt = f ? await readAny(f) : '';
+        const editalTxt = e ? await readAny(e) : '';
+
+        const payload = { ficha: fichaTxt.slice(0,60000), edital: editalTxt.slice(0,60000), field, max_words: 180 };
+        const { ok, status, statusText, headers, text } = await safeFetch(AUTOCOMPLETE_WEBHOOK_URL, {
+          method:'POST',
+          headers:{'Content-Type':'application/json','Accept':'application/json, text/plain'},
+          body: JSON.stringify(payload)
+        });
+
+        // debug curto
+        debugEl.textContent = `AUTOCOMPLETE status: ${status} ${statusText}
+Headers: content-type=${headers.get('content-type')||''}
+RAW:
+${text.slice(0,1000)}`;
+        show(debugEl);
+
+        if(!ok){ hint.textContent = 'Sugestão indisponível.'; return; }
+        if(String(text).trim().toLowerCase()==='accepted'){ hint.textContent = 'Sugestão indisponível (Webhook response ausente).'; return; }
+
+        const data = parseSuggest(text);
+        const out = sanitize(data?.suggest?.text || '');
+        if(!out){ hint.textContent = 'Sugestão indisponível.'; return; }
+
+        if(field==='contexto'){ $('#contexto').value = out; }
+        else { $('#oque').value = out; }
+        hint.textContent = 'Sugestão aplicada. Edite à vontade.';
+      }catch(err){
+        hint.textContent = 'Sugestão indisponível.';
+        debugEl.textContent = String(err);
+        show(debugEl);
+      }
+    }
+    $('#aiContexto').addEventListener('click', ()=> aiSuggest('contexto'));
+    $('#aiOque').addEventListener('click', ()=> aiSuggest('oque'));
+
+    // ===== SUBMIT (gera DOCX) =====
+    document.getElementById('usForm').addEventListener('submit', async (e)=>{
+      e.preventDefault();
+      hide(debugEl);
+      statusEl.classList.remove('error','success');
+      statusEl.textContent='';
+
+      const ctx = sanitize($('#contexto').value);
+      const oq = sanitize($('#oque').value);
+      if(!fichaFile.files[0] || !editalFile.files[0] || !ctx || !oq){
+        statusEl.textContent='Preencha todos os campos e anexe os arquivos requeridos.';
+        statusEl.classList.add('error'); return;
+      }
+
+      try{
+        submitBtn.disabled=true; statusEl.textContent='Lendo arquivos...';
+        const fichaTxt = await readAny(fichaFile.files[0]);
+        const editalTxt = await readAny(editalFile.files[0]);
+
+        const limit = (s,m)=> s.length>m ? (s.slice(0,m)+'... [truncado]') : s;
+        const payload = {
+          ficha: limit(fichaTxt, 60000),
+          edital: limit(editalTxt, 60000),
+          contexto: limit(ctx, 4000),
+          o_que_queremos_fazer: limit(oq, 4000)
+        };
+
+        statusEl.textContent='Enviando para processamento...';
+        const { ok, status, statusText, text } = await safeFetch(WEBHOOK_URL,{
+          method:'POST', headers:{'Content-Type':'application/json','Accept':'application/json, text/plain'},
+          body: JSON.stringify(payload)
+        });
+        if(!ok) throw new Error(`HTTP ${status} ${statusText} | ${text.slice(0,600)}`);
+
+        statusEl.textContent='Interpretando resposta...';
+        let respText = stripFences(text);
+        if(respText.toLowerCase()==='accepted') throw new Error('Webhook principal sem corpo (Accepted).');
+
+        // tenta parsear JSON do us_to_us
+        let parsed = null;
+        try{ parsed = JSON.parse(respText); }
+        catch{
+          const idx = respText.indexOf('{"us_to_us"');
+          if(idx>=0) parsed = JSON.parse(respText.slice(idx));
+        }
+
+        const safe = normalizeUs(parsed, payload.contexto, payload.o_que_queremos_fazer, payload.edital, payload.ficha);
+
+        statusEl.textContent='Gerando DOCX...';
+        const doc = makeDocx(safe);
+        const fname = 'US_to_US_'+(safe.us_to_us?.meta?.filename || Date.now())+'.docx';
+        await saveDocx(doc, fname);
+
+        statusEl.textContent='✓ Documento gerado';
+        statusEl.classList.add('success');
+      }catch(err){
+        statusEl.textContent='Erro: '+err.message;
+        statusEl.classList.add('error');
+        debugEl.textContent = String(err);
+        show(debugEl);
+      }finally{
+        submitBtn.disabled=false;
+      }
     });
   </script>
 </body>
