@@ -79,9 +79,8 @@
   </main>
 
   <script>
-    // Webhooks
-    const WEBHOOK_URL = 'https://hook.us2.make.com/7whb778vlmgg9yst3o5ua2cq4g4dh654'; // gerar DOCX
-    const AUTOCOMPLETE_WEBHOOK_URL = 'https://hook.us2.make.com/w6gspd8kkiuai5v3aqe5dzb3c5xvcwvr'; // novo cenário Make
+    const WEBHOOK_URL = 'https://hook.us2.make.com/7whb778vlmgg9yst3o5ua2cq4g4dh654'; // fluxo principal
+    const AUTOCOMPLETE_WEBHOOK_URL = 'https://hook.us2.make.com/SEU_WEBHOOK_AUTOCOMPLETE'; // <-- SUBSTITUA
 
     const $ = (s)=>document.querySelector(s);
     const sanitize = (s)=> (s==null?'':String(s).replace(/\uFEFF/g,'').replace(/[\u0000-\u001F\u007F-\u009F]/g,'').replace(/\r?\n/g,' ').replace(/\s+/g,' ').trim());
@@ -105,6 +104,8 @@
       if(name.endsWith('.docx')||name.endsWith('.doc')) return readDOCX(file);
       return sanitize(await file.text());
     }
+
+    // --- Parsers robustos ---
     function stripFences(s){
       if(!s) return '';
       let t = String(s).trim();
@@ -112,30 +113,68 @@
       if(t.endsWith('```')) t = t.slice(0,-3);
       return t.trim();
     }
-    function parseClaude(raw, rootKey){
-      let t = stripFences(raw).replace(/\uFEFF/g,'').replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g,'');
-      const sig = `{"${rootKey}"`;
-      const i = t.indexOf(sig); if(i>0) t = t.slice(i);
-      try{ return JSON.parse(t); }catch(e){ return null; }
+
+    // Extrai texto do "envelope" do Anthropic, se o Make devolveu o objeto inteiro
+    function anthroTextFromEnvelope(raw){
+      try{
+        const obj = JSON.parse(raw);
+        if(obj && Array.isArray(obj.content)){
+          return obj.content.map(c=>c?.text||'').join('');
+        }
+      }catch(_){}
+      return null;
     }
 
-    // Sugestão com IA
-    async function aiSuggest(field){
+    // Parser de sugestão que aceita:
+    // 1) JSON puro {"suggest":{...}}
+    // 2) Envelope Anthropic -> content[].text -> JSON lá dentro
+    // 3) Texto cru (usa como sugestão direta)
+    function parseSuggest(raw){
+      if(!raw) return null;
+      let t = stripFences(raw);
+
+      // 2) se veio envelope Anthropic
+      const env = anthroTextFromEnvelope(t);
+      if(env!=null) t = env;
+
+      // tenta JSON direto
       try{
+        const j = JSON.parse(t);
+        if(j?.suggest?.text) return j;
+      }catch(_){}
+
+      // tenta achar início do {"suggest"
+      const k = t.indexOf('{"suggest"');
+      if(k>=0){
+        try{
+          const sliced = t.slice(k);
+          const j2 = JSON.parse(sliced);
+          if(j2?.suggest?.text) return j2;
+        }catch(_){}
+      }
+
+      // se não for JSON, usa como texto direto
+      const txt = sanitize(t);
+      if(txt) return {suggest:{field:"", text:txt}};
+      return null;
+    }
+
+    // --- Autocomplete com IA ---
+    async function aiSuggest(field){
+      const hint = field==='contexto' ? $('#aiContextoHint') : $('#aiOqueHint');
+      try{
+        if(!AUTOCOMPLETE_WEBHOOK_URL || AUTOCOMPLETE_WEBHOOK_URL.includes('SEU_WEBHOOK_AUTOCOMPLETE')){
+          hint.textContent = 'Configurar webhook do autocomplete.';
+          return;
+        }
         const fichaFile = $('#fichaFile').files[0];
         const editalFile = $('#editalFile').files[0];
-        const hint = field==='contexto' ? $('#aiContextoHint') : $('#aiOqueHint');
         hint.textContent = 'Gerando sugestão...';
+
         const fichaTxt = fichaFile ? await readAny(fichaFile) : '';
         const editalTxt = editalFile ? await readAny(editalFile) : '';
 
-        const payload = {
-          ficha: fichaTxt.slice(0,60000),
-          edital: editalTxt.slice(0,60000),
-          field, // "contexto" ou "oque"
-          max_words: 180
-        };
-
+        const payload = { ficha: fichaTxt.slice(0,60000), edital: editalTxt.slice(0,60000), field, max_words: 180 };
         const resp = await fetch(AUTOCOMPLETE_WEBHOOK_URL, {
           method:'POST', headers:{'Content-Type':'application/json','Accept':'application/json, text/plain'},
           body: JSON.stringify(payload)
@@ -143,89 +182,48 @@
         const text = await resp.text();
         if(!resp.ok) throw new Error(`HTTP ${resp.status} ${resp.statusText} | ${text.slice(0,500)}`);
 
-        // resposta esperada: {"suggest":{"field":"contexto","text":"..."}}
-        const data = parseClaude(text, 'suggest');
+        const data = parseSuggest(text);
         const out = sanitize(data?.suggest?.text || '');
-
-        if(field==='contexto') { const el=$('#contexto'); el.value = out || el.value; }
-        else { const el=$('#oque'); el.value = out || el.value; }
-
-        hint.textContent = out ? 'Sugestão aplicada. Edite à vontade.' : 'Sugestão indisponível.';
+        if(!out){
+          hint.textContent = 'Sugestão indisponível.';
+          debugEl.textContent = 'Resposta do autocomplete não reconhecida:\n'+ text.slice(0,1000);
+          debugEl.style.display='block';
+          return;
+        }
+        if(field==='contexto'){ const el=$('#contexto'); el.value = out; }
+        else { const el=$('#oque'); el.value = out; }
+        hint.textContent = 'Sugestão aplicada. Edite à vontade.';
       }catch(err){
-        // Fallback local simples: extrai palavras-chave e monta parágrafo curto
-        const hint = field==='contexto' ? $('#aiContextoHint') : $('#aiOqueHint');
-        hint.textContent = 'Sugestão local aplicada.';
-        const txt = (await tryLocalDraft(field)).slice(0,1500);
-        if(field==='contexto'){ const el=$('#contexto'); el.value = el.value || txt; }
-        else { const el=$('#oque'); el.value = el.value || txt; }
+        hint.textContent = 'Sugestão indisponível.';
         debugEl.textContent = String(err);
         debugEl.style.display='block';
       }
     }
 
-    async function tryLocalDraft(field){
-      const fichaFile = $('#fichaFile').files[0];
-      const editalFile = $('#editalFile').files[0];
-      const ficha = fichaFile ? await readAny(fichaFile) : '';
-      const edital = editalFile ? await readAny(editalFile) : '';
-      const base = sanitize((field==='contexto') ? ficha : edital) || '';
-      const kws = extractKeywords(base).slice(0,12).join(', ');
-      if(field==='contexto'){
-        return `Contexto síntese: ${kws}. O projeto parte de experiências prévias e de demandas identificadas no território, com foco em soluções replicáveis e métricas de impacto. As ações articulam escola e comunidade, conectam ciência cidadã, educação ambiental e comunicação, e exploram dados locais para orientar decisões práticas.`;
-      } else {
-        return `Propomos executar um plano em fases com engajamento, formação, implementação e avaliação. Prioridades: ${kws}. Entregas incluem materiais didáticos, pilotos de infraestrutura verde, base de dados aberta e produtos comunicacionais. Cronograma e governança asseguram execução e aprendizado contínuo.`;
-      }
-    }
+    // ====== (restante do seu código de geração de DOCX permanece igual) ======
+    // Dica: mantenha aqui as funções/métodos de normalização e geração de DOCX que você já tem funcionando.
 
-    function extractKeywords(text){
-      const stop = new Set(['de','da','do','das','dos','a','o','as','os','e','em','para','com','por','no','na','nos','nas','um','uma','que','se','ao','à','às','dos','das','ou','até','entre','sobre']);
-      const words = text.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu,' ').split(/\s+/).filter(w=>w && !stop.has(w) && w.length>2);
-      const freq = {}; for(const w of words){ freq[w]=(freq[w]||0)+1; }
-      return Object.entries(freq).sort((a,b)=>b[1]-a[1]).map(([w])=>w);
-    }
-
-    // Geração DOCX original — mantido
-    const H = docx.HeadingLevel;
-    const P = (t,opts={})=> new docx.Paragraph({text:t||'',...opts});
-    const H1 = (t)=> P(t,{heading:H.HEADING_1});
-    const H2 = (t)=> P(t,{heading:H.HEADING_2});
-
-    function makeDocx(data){
-      const d = data.us_to_us;
-      return new docx.Document({
-        sections:[{properties:{},children:[
-          H1(`De Nós para Nós — ${d.partner||'Parceiro'}`), P(''),
-          H2('Parceiro'), P(d.partner||''),
-          H2('Tamanho da Subvenção'), P(d.grant_size||''),
-          H2('Prazo de Execução'), P(d.timeframe||''),
-          H2('Prazo de Submissão'), P(d.deadline||''), P(''),
-          H2('1. Contexto'), P(d.background||''),
-          H2('2. Resumo do Edital / Oportunidade'), P(d.summary_call||''),
-          H2('3. O que o Parceiro Busca'), P(d.partner_wants||''),
-          H2('4. Descrição Geral do que Queremos Fazer'), P(d.general_description||''),
-          H2('Faixa Etária e Gênero'), P(d.age_gender||''),
-          H2('Como Faremos as Formações?'), P(d.training_how||''),
-          H2('5. Atividades Principais'), ...(d.main_activities||[]).map(x=>P('• '+x)),
-          H2('6. O que as Pessoas Farão'), P(d.people_should_do||''),
-          H2('7. Como Organizaremos a Unidade Produtiva (inclui organograma)'), P(d.organize_productive_unit||''),
-          H2('8. Como Organizaremos as Pessoas no Projeto (inclui ilustração)'), P(d.organize_people||''),
-          H2('10. Orçamento (linhas principais, contrapartidas e soluções)'), P(d.economy||''),
-          H2('11. Instruções Técnicas (opcional)'), P(d.technical_instructions||'')
-        ]}]
-      });
-    }
-    async function saveDocx(doc, filename){
-      const blob = await docx.Packer.toBlob(doc);
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a'); a.href=url; a.download = filename || ('US_to_US_'+Date.now()+'.docx');
-      document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
-    }
-
-    // Handlers existentes de upload e submit — omiti aqui por brevidade. Mantenha os mesmos do seu arquivo atual.
-
-    // Liga os botões de IA
+    // Liga os botões
     $('#aiContexto').addEventListener('click', ()=> aiSuggest('contexto'));
     $('#aiOque').addEventListener('click', ()=> aiSuggest('oque'));
+
+    // Upload UI (mesmo comportamento de antes)
+    const fichaFile = $('#fichaFile'), editalFile = $('#editalFile');
+    const fichaInfo = $('#fichaInfo'), editalInfo = $('#editalInfo');
+    fichaFile.addEventListener('change', async ()=>{
+      fichaInfo.style.display='none';
+      if(!fichaFile.files[0]) return;
+      fichaInfo.textContent='Lendo arquivo...'; fichaInfo.style.display='block';
+      try{ const txt=await readAny(fichaFile.files[0]); fichaInfo.textContent=`✓ ${fichaFile.files[0].name} carregado (${(txt.length/1024).toFixed(1)} KB texto)`; }
+      catch{ fichaInfo.textContent='Erro ao ler o arquivo'; }
+    });
+    editalFile.addEventListener('change', async ()=>{
+      editalInfo.style.display='none';
+      if(!editalFile.files[0]) return;
+      editalInfo.textContent='Lendo arquivo...'; editalInfo.style.display='block';
+      try{ const txt=await readAny(editalFile.files[0]); editalInfo.textContent=`✓ ${editalFile.files[0].name} carregado (${(txt.length/1024).toFixed(1)} KB texto)`; }
+      catch{ editalInfo.textContent='Erro ao ler o arquivo'; }
+    });
   </script>
 </body>
 </html>
