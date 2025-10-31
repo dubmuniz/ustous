@@ -149,15 +149,13 @@
     function cleanEditalForContext(t){
       if(!t) return '';
       let s = ' ' + t + ' ';
-      // remove URLs
       s = s.replace(/https?:\/\/\S+/gi,' ');
-      // remove blocos com palavras-chave de FAQ/portal/aplicação (em EN)
       const patterns = [
         /\b(frequently asked questions|faqs?|application process|apply now|grants portal|character limits?|full application template|eligibility|budget guidelines?)\b[\s\S]{0,2000}/gi,
-        /\b(terms of use|privacy policy|login|portal)\b[\s\S]{0,1000}/gi
+        /\b(terms of use|privacy policy|login|portal)\b[\s\S]{0,1000}/gi,
+        /\b(sumário|índice)\b[\s\S]{0,1000}/gi
       ];
       patterns.forEach(rx=>{ s = s.replace(rx,' '); });
-      // colapsa espaços
       s = s.replace(/\s+/g,' ').trim();
       return s.slice(0,120000);
     }
@@ -182,9 +180,8 @@
     function looksEnglishGarbage(text){
       if(!text) return false;
       const t = text.toLowerCase();
-      const hits = ['faq','application','apply now','grants portal','character limits','template'];
+      const hits = ['faq','application','apply now','grants portal','character limits','template','portal'];
       let score = 0; hits.forEach(k=>{ if(t.includes(k)) score++; });
-      // heurística simples: muitos termos-chave EN => provável lixo
       return score >= 2;
     }
     function parseSuggest(raw){
@@ -356,8 +353,8 @@
         const editalTxt = cleanEditalForContext(editalRaw);
 
         const guidance = (field === 'contexto')
-          ? 'Escreva SOMENTE em português do Brasil. Redija a seção "Contexto". Foque no território: demografia, questões sociais recorrentes, segurança pública, infraestrutura urbana e serviços, aspectos socioeconômicos e ambientais. Use Ficha e Edital apenas como base; complemente com pesquisa contextual sucinta (IBGE, Ipea, Atlas da Violência, INEP, SNIS, Datasus). NÃO copie trechos do edital, NÃO inclua links, NÃO mencione FAQ, template ou processo de inscrição. Se faltar número, descreva qualitativamente com precisão. Texto corrido, tom técnico, 180–260 palavras.'
-          : 'Escreva SOMENTE em português do Brasil. Redija a seção "O que queremos fazer". Desenvolva objetivos, público-alvo, escopo de atividades, metodologia, entregas, governança e indicadores esperados. Baseie-se principalmente na Ficha de Identificação e alinhe ao Edital. NÃO copie trechos do edital, NÃO inclua links, NÃO mencione FAQ ou processo de inscrição. Texto corrido, tom técnico e direto, 150–200 palavras.';
+          ? 'Escreva SOMENTE em português do Brasil. Redija a seção "Contexto". Foque no território: demografia, questões sociais recorrentes, segurança pública, infraestrutura urbana e serviços, aspectos socioeconômicos e ambientais. Use Ficha e Edital como base e complemente com pesquisa contextual sucinta (IBGE, Ipea, Atlas da Violência, INEP, SNIS, Datasus). NÃO copie trechos do edital, NÃO inclua links, NÃO mencione FAQ, template ou processo de inscrição. Se faltar número, descreva qualitativamente com precisão. Texto corrido, tom técnico, 180–260 palavras. Varie o estilo das frases e evite padrões repetitivos.'
+          : 'Escreva SOMENTE em português do Brasil. Redija a seção "O que queremos fazer". Desenvolva objetivos, público-alvo, escopo de atividades, metodologia, entregas, governança e indicadores esperados. Baseie-se principalmente na Ficha de Identificação e alinhe ao Edital. NÃO copie trechos do edital, NÃO inclua links, NÃO mencione FAQ ou processo de inscrição. Texto corrido, tom técnico e direto, 150–200 palavras. Varie formulações para não repetir o estilo do contexto.';
 
         const payload = {
           ficha: fichaTxt.slice(0,120000),
@@ -390,7 +387,6 @@ ${text.slice(0,1000)}`;
         const resolvedField = data.suggest.field || field;
         let out = sanitize(data.suggest.text || '');
 
-        // Hard-guard contra lixo em inglês/FAQ
         if(!out || out.length < 30 || looksEnglishGarbage(out)){
           out = buildFallback(resolvedField, fichaTxt, editalTxt);
         }
@@ -493,6 +489,7 @@ ${text.slice(0,1000)}`;
   </script>
 </body>
 </html>
+
 
 
 
