@@ -9,6 +9,7 @@
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet">
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/docx@8.5.0/build/index.umd.js"></script>
   <style>
     :root{--green:#1E7E34;--ink:#1b1b1b;--bg:#fafafa;--muted:#667085}
@@ -44,13 +45,13 @@
   <main class="wrap">
     <form id="usForm" class="form-grid" novalidate>
       <div>
-        <label>Ficha de Identificação (PDF ou DOCX) *</label>
-        <input type="file" id="fichaFile" accept=".pdf,.docx,.doc,.txt .xlsx .xls" required>
+        <label>Ficha de Identificação (PDF, DOCX, TXT, XLSX, XLS) *</label>
+        <input type="file" id="fichaFile" accept=".pdf,.docx,.doc,.txt,.xlsx,.xls" required>
         <div id="fichaInfo" class="file-info"></div>
       </div>
 
       <div>
-        <label>Edital (PDF ou DOCX) *</label>
+        <label>Edital (PDF, DOCX ou TXT) *</label>
         <input type="file" id="editalFile" accept=".pdf,.docx,.doc,.txt" required>
         <div id="editalInfo" class="file-info"></div>
       </div>
@@ -101,6 +102,7 @@
       return { ok: resp.ok, status: resp.status, statusText: resp.statusText, headers: resp.headers, text };
     }
 
+    // ===== FILE READERS =====
     async function readPDF(file){
       const arr = await file.arrayBuffer();
       pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
@@ -118,10 +120,29 @@
       const res = await mammoth.extractRawText({arrayBuffer:arr});
       return sanitize(res.value);
     }
+    async function readXLSX(file){
+      const arr = await file.arrayBuffer();
+      const wb = XLSX.read(arr, {type:'array'});
+      let out = '';
+      wb.SheetNames.forEach(name=>{
+        const ws = wb.Sheets[name];
+        const csv = XLSX.utils.sheet_to_csv(ws, {FS:'\t', RS:'\n'});
+        out += `\n[${name}]\n` + csv + '\n';
+      });
+      // Também tenta JSON compacto (primeiras 200 linhas)
+      try{
+        const first = wb.Sheets[wb.SheetNames[0]];
+        const json = XLSX.utils.sheet_to_json(first, {defval:'', raw:true});
+        const rows = json.slice(0,200).map(row=>Object.values(row).join(' | ')).join('\n');
+        out += '\n' + rows;
+      }catch(_){}
+      return sanitize(out).slice(0,120000);
+    }
     async function readAny(file){
       const name = (file.name||'').toLowerCase();
       if(name.endsWith('.pdf')) return readPDF(file);
       if(name.endsWith('.docx')||name.endsWith('.doc')) return readDOCX(file);
+      if(name.endsWith('.xlsx')||name.endsWith('.xls')) return readXLSX(file);
       return sanitize(await file.text());
     }
 
@@ -298,7 +319,7 @@
       document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
     }
 
-    // ===== AUTOCOMPLETE (UM ÚNICO HANDLER) =====
+    // ===== AUTOCOMPLETE (com guias diferentes e PT-BR obrigatório) =====
     async function aiSuggest(field){
       const hint = field==='contexto' ? $('#aiContextoHint') : $('#aiOqueHint');
       hide($('#debug'));
@@ -310,16 +331,17 @@
         const fichaTxt = f ? await readAny(f) : '';
         const editalTxt = e ? await readAny(e) : '';
 
+        // Guia para PT-BR e (quando for "Contexto") com orientação para pesquisa contextual
         const guidance = (field === 'contexto')
-          ? 'Você vai escrever a seção "Contexto". Foque no território, demografia, segurança pública, infraestrutura urbana, acesso a serviços, aspectos socioeconômicos e ambientais. Baseie-se somente na Ficha e no Edital. Se não houver números, descreva qualitativamente. Sem listas. Tom técnico e objetivo.'
-          : 'Você vai escrever a seção "O que queremos fazer". Descreva objetivos, público, escopo de atividades, metodologia, entregas, governança e indicadores esperados. Conecte com o Edital e com a Ficha. Sem listas. Tom técnico e direto.';
+          ? 'Escreva SOMENTE em português do Brasil. Você vai redigir a seção "Contexto". Foque no território: demografia, questões sociais recorrentes, segurança pública, infraestrutura urbana e serviços, aspectos socioeconômicos e ambientais. Utilize a Ficha e o Edital e, quando necessário, complemente com pesquisa contextual sucinta (fontes preferenciais: IBGE, Ipea, Atlas da Violência, INEP, SNIS, Datasus). Não invente números. Se faltar dado, descreva qualitativamente com precisão. Texto corrido, sem listas, tom técnico.'
+          : 'Escreva SOMENTE em português do Brasil. Você vai redigir a seção "O que queremos fazer". Desenvolva objetivos, público-alvo, escopo de atividades, metodologia, entregas, governança e indicadores esperados. Baseie-se principalmente na Ficha de Identificação, aprimorando a formulação com coerência ao Edital. Sem listas. Texto corrido, tom técnico e direto.';
 
         const payload = {
-          ficha: fichaTxt.slice(0,60000),
-          edital: editalTxt.slice(0,60000),
+          ficha: fichaTxt.slice(0,120000),
+          edital: editalTxt.slice(0,120000),
           field,
           guidance,
-          max_words: (field === 'contexto') ? 220 : 180
+          max_words: (field === 'contexto') ? 260 : 200
         };
 
         const { ok, status, statusText, headers, text } = await safeFetch(AUTOCOMPLETE_WEBHOOK_URL, {
@@ -401,10 +423,10 @@ ${text.slice(0,1000)}`;
 
         const limit = (s,m)=> s.length>m ? (s.slice(0,m)+'... [truncado]') : s;
         const payload = {
-          ficha: limit(fichaTxt, 60000),
-          edital: limit(editalTxt, 60000),
-          contexto: limit(ctx, 4000),
-          o_que_queremos_fazer: limit(oq, 4000)
+          ficha: limit(fichaTxt, 120000),
+          edital: limit(editalTxt, 120000),
+          contexto: limit(ctx, 6000),
+          o_que_queremos_fazer: limit(oq, 6000)
         };
 
         statusEl.textContent='Enviando para processamento...';
