@@ -82,8 +82,8 @@
 
   <script>
     // ===== CONFIG =====
-    const WEBHOOK_URL = 'https://hook.us2.make.com/7whb778vlmgg9yst3o5ua2cq4g4dh654'; // fluxo principal (gera DOCX)
-    let AUTOCOMPLETE_WEBHOOK_URL = 'https://hook.us2.make.com/w6gspd8kkiuai5v3aqe5dzb3c5xvcwvr'; // autocomplete
+    const WEBHOOK_URL = 'https://hook.us2.make.com/7whb778vlmgg9yst3o5ua2cq4g4dh654'; // principal (gera DOCX)
+    const AUTOCOMPLETE_WEBHOOK_URL = 'https://hook.us2.make.com/w6gspd8kkiuai5v3aqe5dzb3c5xvcwvr'; // autocomplete
 
     // ===== HELPERS =====
     const $ = s => document.querySelector(s);
@@ -129,7 +129,6 @@
         const csv = XLSX.utils.sheet_to_csv(ws, {FS:'\t', RS:'\n'});
         out += `\n[${name}]\n` + csv + '\n';
       });
-      // Também tenta JSON compacto (primeiras 200 linhas)
       try{
         const first = wb.Sheets[wb.SheetNames[0]];
         const json = XLSX.utils.sheet_to_json(first, {defval:'', raw:true});
@@ -144,6 +143,23 @@
       if(name.endsWith('.docx')||name.endsWith('.doc')) return readDOCX(file);
       if(name.endsWith('.xlsx')||name.endsWith('.xls')) return readXLSX(file);
       return sanitize(await file.text());
+    }
+
+    // ===== LIMPEZA DO EDITAL (remove FAQ/links/boilerplate EN) =====
+    function cleanEditalForContext(t){
+      if(!t) return '';
+      let s = ' ' + t + ' ';
+      // remove URLs
+      s = s.replace(/https?:\/\/\S+/gi,' ');
+      // remove blocos com palavras-chave de FAQ/portal/aplicação (em EN)
+      const patterns = [
+        /\b(frequently asked questions|faqs?|application process|apply now|grants portal|character limits?|full application template|eligibility|budget guidelines?)\b[\s\S]{0,2000}/gi,
+        /\b(terms of use|privacy policy|login|portal)\b[\s\S]{0,1000}/gi
+      ];
+      patterns.forEach(rx=>{ s = s.replace(rx,' '); });
+      // colapsa espaços
+      s = s.replace(/\s+/g,' ').trim();
+      return s.slice(0,120000);
     }
 
     // ===== PARSERS =====
@@ -162,6 +178,14 @@
         }
       }catch(_){}
       return null;
+    }
+    function looksEnglishGarbage(text){
+      if(!text) return false;
+      const t = text.toLowerCase();
+      const hits = ['faq','application','apply now','grants portal','character limits','template'];
+      let score = 0; hits.forEach(k=>{ if(t.includes(k)) score++; });
+      // heurística simples: muitos termos-chave EN => provável lixo
+      return score >= 2;
     }
     function parseSuggest(raw){
       if(!raw) return null;
@@ -231,7 +255,6 @@
 
     // ===== FALLBACK LOCAL =====
     function buildFallback(field, fichaTxt, editalTxt){
-      const ficha = sanitize(fichaTxt||'');
       const edital = sanitize(editalTxt||'');
       if(field === 'contexto'){
         const partner = extractPartner(edital) || 'o parceiro';
@@ -319,7 +342,7 @@
       document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
     }
 
-    // ===== AUTOCOMPLETE (com guias diferentes e PT-BR obrigatório) =====
+    // ===== AUTOCOMPLETE (PT-BR estrito + pré-limpeza) =====
     async function aiSuggest(field){
       const hint = field==='contexto' ? $('#aiContextoHint') : $('#aiOqueHint');
       hide($('#debug'));
@@ -329,12 +352,12 @@
         hint.textContent = 'Gerando sugestão...';
 
         const fichaTxt = f ? await readAny(f) : '';
-        const editalTxt = e ? await readAny(e) : '';
+        const editalRaw = e ? await readAny(e) : '';
+        const editalTxt = cleanEditalForContext(editalRaw);
 
-        // Guia para PT-BR e (quando for "Contexto") com orientação para pesquisa contextual
         const guidance = (field === 'contexto')
-          ? 'Escreva SOMENTE em português do Brasil. Você vai redigir a seção "Contexto". Foque no território: demografia, questões sociais recorrentes, segurança pública, infraestrutura urbana e serviços, aspectos socioeconômicos e ambientais. Utilize a Ficha e o Edital e, quando necessário, complemente com pesquisa contextual sucinta (fontes preferenciais: IBGE, Ipea, Atlas da Violência, INEP, SNIS, Datasus). Não invente números. Se faltar dado, descreva qualitativamente com precisão. Texto corrido, sem listas, tom técnico.'
-          : 'Escreva SOMENTE em português do Brasil. Você vai redigir a seção "O que queremos fazer". Desenvolva objetivos, público-alvo, escopo de atividades, metodologia, entregas, governança e indicadores esperados. Baseie-se principalmente na Ficha de Identificação, aprimorando a formulação com coerência ao Edital. Sem listas. Texto corrido, tom técnico e direto.';
+          ? 'Escreva SOMENTE em português do Brasil. Redija a seção "Contexto". Foque no território: demografia, questões sociais recorrentes, segurança pública, infraestrutura urbana e serviços, aspectos socioeconômicos e ambientais. Use Ficha e Edital apenas como base; complemente com pesquisa contextual sucinta (IBGE, Ipea, Atlas da Violência, INEP, SNIS, Datasus). NÃO copie trechos do edital, NÃO inclua links, NÃO mencione FAQ, template ou processo de inscrição. Se faltar número, descreva qualitativamente com precisão. Texto corrido, tom técnico, 180–260 palavras.'
+          : 'Escreva SOMENTE em português do Brasil. Redija a seção "O que queremos fazer". Desenvolva objetivos, público-alvo, escopo de atividades, metodologia, entregas, governança e indicadores esperados. Baseie-se principalmente na Ficha de Identificação e alinhe ao Edital. NÃO copie trechos do edital, NÃO inclua links, NÃO mencione FAQ ou processo de inscrição. Texto corrido, tom técnico e direto, 150–200 palavras.';
 
         const payload = {
           ficha: fichaTxt.slice(0,120000),
@@ -366,7 +389,9 @@ ${text.slice(0,1000)}`;
         const data = parseSuggest(text) || { suggest:{ field, text:"" } };
         const resolvedField = data.suggest.field || field;
         let out = sanitize(data.suggest.text || '');
-        if(!out || out.length < 20){
+
+        // Hard-guard contra lixo em inglês/FAQ
+        if(!out || out.length < 30 || looksEnglishGarbage(out)){
           out = buildFallback(resolvedField, fichaTxt, editalTxt);
         }
 
@@ -424,7 +449,7 @@ ${text.slice(0,1000)}`;
         const limit = (s,m)=> s.length>m ? (s.slice(0,m)+'... [truncado]') : s;
         const payload = {
           ficha: limit(fichaTxt, 120000),
-          edital: limit(editalTxt, 120000),
+          edital: limit(cleanEditalForContext(editalTxt), 120000),
           contexto: limit(ctx, 6000),
           o_que_queremos_fazer: limit(oq, 6000)
         };
@@ -468,6 +493,7 @@ ${text.slice(0,1000)}`;
   </script>
 </body>
 </html>
+
 
 
 
