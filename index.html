@@ -86,11 +86,11 @@
   </main>
 
   <script>
-    // ===== CONFIG =====
+    // CONFIG
     const WEBHOOK_URL = 'https://hook.us2.make.com/7whb778vlmgg9yst3o5ua2cq4g4dh654';
     const AUTOCOMPLETE_WEBHOOK_URL = 'https://hook.us2.make.com/w6gspd8kkiuai5v3aqe5dzb3c5xvcwvr';
 
-    // ===== HELPERS =====
+    // HELPERS
     const $ = s => document.querySelector(s);
     const show = el => el.classList.remove('hidden');
     const hide = el => el.classList.add('hidden');
@@ -106,7 +106,7 @@
       } finally { clearTimeout(to); }
     }
 
-    // ===== FILE READERS =====
+    // FILE READERS
     async function readPDF(file){
       const arr = await file.arrayBuffer();
       pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
@@ -149,7 +149,7 @@
       return sanitize(await file.text());
     }
 
-    // ===== LIMPEZA DO EDITAL =====
+    // LIMPEZA DO EDITAL
     function cleanEditalForContext(t){
       if(!t) return '';
       let s = ' ' + t + ' ';
@@ -163,7 +163,7 @@
       return s.slice(0,120000);
     }
 
-    // ===== PALAVRAS-CHAVE E LOCAL =====
+    // PALAVRAS-CHAVE E LOCAL
     const STOP = new Set('a ao aos as o os e de da do das dos em no na nos nas por para com um uma umas uns que como ser ter estar mais menos muito pouco já não sem sob sobre até entre desde pelos pelas se sua seu suas seus este esta isto esse essa isso aquele aquela aquilo ao longo dentro fora cada qual cujo cuja quais porque portanto entretanto contudo todavia também ainda mesmo mesma mesmos mesmas foi são eram será serão havia houver houve tendo sendo devido a partir'.split(/\s+/));
     function keywords(txt, max=20){
       const t = (txt||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
@@ -180,7 +180,7 @@
       return 'Campo Grande Rio de Janeiro';
     }
 
-    // ===== WIKIPEDIA ENRICHMENT =====
+    // WIKIPEDIA ENRICHMENT
     async function wikiSummary(topic){
       const encoded = encodeURIComponent(topic.replace(/\s+/g,'_'));
       const url = `https://pt.wikipedia.org/api/rest_v1/page/summary/${encoded}`;
@@ -192,7 +192,7 @@
       }catch{ return ''; }
     }
 
-    // ===== PROMPT BUILDER =====
+    // PROMPT BUILDER
     function buildPrompt(field, ficha, editalClean, webCtx, seed){
       const fichaKw = keywords(ficha, 12).join(', ');
       const editalKw = keywords(editalClean, 12).join(', ');
@@ -237,7 +237,7 @@ Saída OBRIGATÓRIA, JSON em uma linha:
       return base + '\n\n' + (field==='contexto' ? contexto : oque);
     }
 
-    // ===== PARSE SUGGEST =====
+    // PARSE SUGGEST
     function stripFences(s){
       if(!s) return '';
       let t = String(s).trim();
@@ -256,7 +256,7 @@ Saída OBRIGATÓRIA, JSON em uma linha:
       return null;
     }
 
-    // ===== AUTOCOMPLETE (TUDO NO FRONT) =====
+    // AUTOCOMPLETE NO FRONT
     async function aiSuggest(field){
       const hint = field==='contexto' ? $('#aiContextoHint') : $('#aiOqueHint');
       hide($('#debug'));
@@ -308,7 +308,7 @@ ${text.slice(0,1000)}`;
       }
     }
 
-    // ===== DOCX =====
+    // DOCX
     const H = docx.HeadingLevel;
     const P = (t,opts={})=> new docx.Paragraph({text:t||'',...opts});
     const H1 = (t)=> P(t,{heading:H.HEADING_1});
@@ -344,10 +344,9 @@ ${text.slice(0,1000)}`;
       document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
     }
 
-    // ===== EVENTOS =====
+    // EVENTOS
     document.getElementById('aiContexto').addEventListener('click', ()=> aiSuggest('contexto'));
     document.getElementById('aiOque').addEventListener('click', ()=> aiSuggest('oque'));
-
     document.getElementById('fichaFile').addEventListener('change', async ()=>{
       const el = $('#fichaInfo'); el.style.display='none';
       if(!$('#fichaFile').files[0]) return;
@@ -363,7 +362,7 @@ ${text.slice(0,1000)}`;
       catch{ el.textContent='Erro ao ler o arquivo'; }
     });
 
-    // ===== SUBMIT =====
+    // SUBMIT
     document.getElementById('usForm').addEventListener('submit', async (e)=>{
       e.preventDefault();
       hide($('#debug'));
@@ -400,36 +399,25 @@ ${text.slice(0,1000)}`;
         );
         if(!ok) throw new Error(`HTTP ${status} ${statusText} | ${text.slice(0,600)}`);
 
-        // ===== PARSE TOLERANTE DE JSON =====
+        // PARSE DETERMINÍSTICO E CURTO
         statusEl.textContent='Interpretando resposta...';
-        let respText = text.trim();
-        if(respText.toLowerCase()==='accepted') throw new Error('Webhook principal sem corpo JSON.');
-        function stripFences(s){let t=String(s||'').trim();if(t.startsWith('```'))t=t.replace(/^```(?:json)?\s*/i,'');if(t.endsWith('```'))t=t.slice(0,-3);return t.trim()}
-        function normalizeQuotes(s){return s.replace(/[\u201C\u201D]/g,'"').replace(/[\u2018\u2019]/g,"'")}
-        function extractJsonBlock(s){const src=normalizeQuotes(stripFences(s));const startKey=src.indexOf('{"us_to_us"');const start=(startKey>=0?startKey:src.indexOf('{'));if(start<0)return null;let i=start,depth=0,inStr=false,esc=false;for(;i<src.length;i++){const c=src[i];if(inStr){if(esc){esc=false}else if(c==='\\'){esc=true}else if(c==='"'){inStr=false}}else{if(c==='"'){inStr=true}else if(c==='{'){depth++}else if(c==='}'){depth--;if(depth===0){return src.slice(start,i+1)}}}}return null}
-        let parsed=null;
-        try{ parsed=JSON.parse(respText) }
-        catch{
-          try{
-            const blk=extractJsonBlock(respText);
-            if(!blk) throw new Error('JSON não encontrado.');
-            try{ parsed=JSON.parse(blk) }
-            catch{
-              const maybe=blk.replace(/,\s*([}\]])/g,'$1');
-              parsed=JSON.parse(maybe);
-            }
-          }catch{
-            try{
-              const blk=extractJsonBlock(respText);
-              if(!blk) throw new Error('Falha geral de parse.');
-              // último recurso, avalia como expressão segura do próprio JS
-              parsed=(new Function('return ('+blk+')'))();
-            }catch(e2){
-              throw new Error('Falha ao interpretar JSON: '+(e2.message||e2));
-            }
+        const respRaw = text.trim();
+        if (respRaw.toLowerCase()==='accepted') throw new Error('Webhook principal sem corpo JSON.');
+        let parsed = null;
+        try { parsed = JSON.parse(respRaw); } catch(_) {}
+        if (!parsed) {
+          const first = respRaw.indexOf('{');
+          const last  = respRaw.lastIndexOf('}');
+          if (first >= 0 && last > first) {
+            const slice = respRaw.slice(first, last+1);
+            try { parsed = JSON.parse(slice); } catch(_) {}
           }
         }
-        if(!parsed || !parsed.us_to_us) throw new Error('Resposta inválida do backend.');
+        if (!parsed || !parsed.us_to_us) {
+          $('#debug').textContent = 'RAW (primeiros 1500 chars):\n' + respRaw.slice(0,1500);
+          show($('#debug'));
+          throw new Error('Falha geral de parse. O backend não retornou JSON puro com {"us_to_us":...}.');
+        }
 
         statusEl.textContent='Gerando DOCX...';
         const doc = makeDocx(parsed);
