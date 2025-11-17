@@ -72,7 +72,20 @@
   <script>
     const WEBHOOK_URL='https://hook.us2.make.com/7whb778vlmgg9yst3o5ua2cq4g4dh654';
     const $=(s)=>document.querySelector(s);
-    const sanitize=(s)=>(s==null?'':String(s).replace(/\uFEFF/g,'').replace(/[\u0000-\u001F\u007F-\u009F]/g,'').replace(/\r?\n/g,' ').replace(/\s+/g,' ').trim());
+    const sanitize=(s)=>(s==null?'':String(s)
+      .replace(/\uFEFF/g,'')
+      .replace(/[\u0000-\u001F\u007F-\u009F]/g,'')
+      .replace(/\r?\n/g,' ')
+      .replace(/\s+/g,' ')
+      .trim()
+    );
+
+    // deixa o texto seguro para ser interpolado em uma string JSON no Make
+    function safeForJsonInline(s){
+      return sanitize(s)
+        .replace(/\\/g,'/')  // evita barras invertidas que virem escapes quebrados
+        .replace(/"/g,"'");  // troca aspas duplas por simples
+    }
 
     async function readPDF(file){
       const arr=await file.arrayBuffer();
@@ -84,12 +97,12 @@
         const tc=await pg.getTextContent();
         text+=tc.items.map(i=>i.str).join(' ')+' ';
       }
-      return sanitize(text);
+      return text;
     }
     async function readDOCX(file){
       const arr=await file.arrayBuffer();
       const res=await mammoth.extractRawText({arrayBuffer:arr});
-      return sanitize(res.value);
+      return res.value||'';
     }
     async function readXLSX(file){
       const arr=await file.arrayBuffer();
@@ -101,14 +114,14 @@
         out.push(`# ${name}`);
         for(const r of rows){ out.push(r.map(v=>String(v)).join('\t')); }
       }
-      return sanitize(out.join('\n'));
+      return out.join('\n');
     }
     async function readAny(file){
       const name=(file.name||'').toLowerCase();
       if(name.endsWith('.pdf')) return readPDF(file);
       if(name.endsWith('.docx')||name.endsWith('.doc')) return readDOCX(file);
       if(name.endsWith('.xlsx')||name.endsWith('.xls')) return readXLSX(file);
-      return sanitize(await file.text());
+      return await file.text();
     }
 
     function stripFences(s){
@@ -119,27 +132,29 @@
       return t.trim();
     }
     function parseClaude(raw){
-      let t=stripFences(raw).replace(/\uFEFF/g,'').replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g,'');
+      let t=stripFences(raw)
+        .replace(/\uFEFF/g,'')
+        .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g,'');
       const i=t.indexOf('{"us_to_us"');
       if(i>0) t=t.slice(i);
       try{ return JSON.parse(t); }catch{ return null; }
     }
 
     function extractPartner(edital){
-      const txt=(edital||'').toLowerCase();
+      const txt=(sanitize(edital)||'').toLowerCase();
       const hits=[...txt.matchAll(/\b(fundação oswaldo cruz|fiocruz|national geographic|banco mundial|unesco|unicef|pnud|giz|bid|bndes|ministério [a-zçãé ]+)\b/gi)];
       return hits.length? smartTitleCase(hits[0][0]) : '';
     }
     function extractGrant(edital){
-      const m=(edital||'').match(/(R\$\s?[\d\.\,]+|\bUS\$?\s?[\d\.\,]+|€\s?[\d\.\,]+)\s*(mil(hões)?|k)?/i);
+      const m=(sanitize(edital)||'').match(/(R\$\s?[\d\.\,]+|\bUS\$?\s?[\d\.\,]+|€\s?[\d\.\,]+)\s*(mil(hões)?|k)?/i);
       return m? m[0].replace(/\s{2,}/g,' ') : '';
     }
     function extractTimeframe(edital){
-      const m=(edital||'').match(/\b(\d{1,2})\s*(mes(es)?|month[s]?|m)\b/i);
+      const m=(sanitize(edital)||'').match(/\b(\d{1,2})\s*(mes(es)?|month[s]?|m)\b/i);
       return m? `${m[1]} meses` : '12 meses';
     }
     function extractDeadline(edital){
-      const m=(edital||'').match(/\b(\d{1,2}\/\d{1,2}\/\d{2,4}|\d{1,2}\s+de\s+\w+\s+de\s+\d{4})\b/i);
+      const m=(sanitize(edital)||'').match(/\b(\d{1,2}\/\d{1,2}\/\d{2,4}|\d{1,2}\s+de\s+\w+\s+de\s+\d{4})\b/i);
       return m? m[0] : '';
     }
 
@@ -153,7 +168,7 @@
       }).join(' ');
     }
 
-    // Remove frases LONGAS que sejam cópia literal de algum dos textos de entrada
+    // remove frases muito longas que sejam cópia literal de algum dos textos de entrada
     function removeCopies(text,sources){
       let t=sanitize(text);
       if(!t) return '';
@@ -169,9 +184,7 @@
           continue;
         }
         const norm=sTrim.toLowerCase();
-        if(joined.includes(norm)){
-          continue;
-        }
+        if(joined.includes(norm)) continue;
         kept.push(sTrim);
       }
       return kept.join(' ').trim();
@@ -188,25 +201,25 @@
 
       const sources=[contexto,oque,edital,ficha];
 
-      const background=removeCopies(sanitize(us.background||''),sources);
-      const summary_call=removeCopies(sanitize(us.summary_call||''),sources);
-      const partner_wants_txt=removeCopies(sanitize(us.partner_wants||''),sources);
-      const general_description=removeCopies(sanitize(us.general_description||''),sources);
-      const age_gender=removeCopies(sanitize(us.age_gender||''),sources);
-      const training_how=removeCopies(sanitize(us.training_how||''),sources);
+      const background=removeCopies(us.background||'',sources);
+      const summary_call=removeCopies(us.summary_call||'',sources);
+      const partner_wants_txt=removeCopies(us.partner_wants||'',sources);
+      const general_description=removeCopies(us.general_description||'',sources);
+      const age_gender=removeCopies(us.age_gender||'',sources);
+      const training_how=removeCopies(us.training_how||'',sources);
 
       let main_activities=[];
       if(Array.isArray(us.main_activities) && us.main_activities.length){
         main_activities=us.main_activities
-          .map(x=>removeCopies(sanitize(x),sources))
+          .map(x=>removeCopies(x,sources))
           .filter(Boolean);
       }
 
-      const people_should_do=removeCopies(sanitize(us.people_should_do||''),sources);
-      const organize_productive_unit=removeCopies(sanitize(us.organize_productive_unit||''),sources);
-      const organize_people=removeCopies(sanitize(us.organize_people||''),sources);
-      const economy=removeCopies(sanitize(us.economy||''),sources);
-      const technical_instructions=removeCopies(sanitize(us.technical_instructions||''),sources);
+      const people_should_do=removeCopies(us.people_should_do||'',sources);
+      const organize_productive_unit=removeCopies(us.organize_productive_unit||'',sources);
+      const organize_people=removeCopies(us.organize_people||'',sources);
+      const economy=removeCopies(us.economy||'',sources);
+      const technical_instructions=removeCopies(us.technical_instructions||'',sources);
 
       return {
         us_to_us:{
@@ -305,7 +318,8 @@
       fichaInfo.style.display='block';
       try{
         const txt=await readAny(fichaFile.files[0]);
-        fichaInfo.textContent=`✓ ${fichaFile.files[0].name} carregado (${(txt.length/1024).toFixed(1)} KB texto)`;
+        const safe=safeForJsonInline(txt);
+        fichaInfo.textContent=`✓ ${fichaFile.files[0].name} carregado (${(safe.length/1024).toFixed(1)} KB texto)`;
       }catch{
         fichaInfo.textContent='Erro ao ler o arquivo';
       }
@@ -317,24 +331,25 @@
       editalInfo.style.display='block';
       try{
         const txt=await readAny(editalFile.files[0]);
-        editalInfo.textContent=`✓ ${editalFile.files[0].name} carregado (${(txt.length/1024).toFixed(1)} KB texto)`;
+        const safe=safeForJsonInline(txt);
+        editalInfo.textContent=`✓ ${editalFile.files[0].name} carregado (${(safe.length/1024).toFixed(1)} KB texto)`;
       }catch{
         editalInfo.textContent='Erro ao ler o arquivo';
       }
     });
 
-    function buildInstructionBlock(label,content){
-      if(!content) return '';
+    function buildInstructionBlock(label,contentSafe){
+      if(!contentSafe) return '';
       return [
-        `INSTRUÇÃO PARA A IA (${label}):`,
+        `INSTRUÇÃO PARA A IA (${label})`,
         `Use o texto abaixo apenas como fonte de informação e contexto.`,
-        `Você NÃO deve copiar nem reescrever literalmente nenhuma frase do texto abaixo.`,
+        `Você não deve copiar nem reescrever literalmente nenhuma frase do texto abaixo.`,
         `Produza conteúdo totalmente original, em estilo de proposta para chamadas de organizações do terceiro setor, com linguagem formal e bem articulada.`,
-        `Cada seção do objeto "us_to_us" que você gerar deve conter pelo menos um parágrafo consistente (mínimo de 80 a 120 palavras), com ideias completas, conectadas e específicas para esta oportunidade.`,
+        `Cada seção do objeto us_to_us que você gerar deve conter pelo menos um parágrafo consistente (mínimo de 80 a 120 palavras), com ideias completas, conectadas e específicas para esta oportunidade.`,
         `Evite frases genéricas que poderiam servir para qualquer edital e evite repetir estruturas prontas entre seções ou entre execuções desta ferramenta.`,
         `Se a sua primeira formulação ficar muito curta ou genérica, reescreva e expanda até atingir a densidade e a especificidade necessárias, sempre mantendo coerência com o restante do documento.`,
         '',
-        content
+        contentSafe
       ].join(' ');
     }
 
@@ -345,9 +360,10 @@
       statusEl.classList.remove('error','success');
       statusEl.textContent='';
 
-      const ctx=sanitize($('#contexto').value);
-      const oq=sanitize($('#oque').value);
-      if(!fichaFile.files[0]||!editalFile.files[0]||!ctx||!oq){
+      const ctxRaw=$('#contexto').value;
+      const oqRaw=$('#oque').value;
+
+      if(!fichaFile.files[0]||!editalFile.files[0]||!ctxRaw||!oqRaw){
         statusEl.textContent='Preencha todos os campos e anexe os arquivos requeridos.';
         statusEl.classList.add('error');
         return;
@@ -356,21 +372,29 @@
       try{
         submitBtn.disabled=true;
         statusEl.textContent='Lendo arquivos...';
+
         const fichaTxt=await readAny(fichaFile.files[0]);
         const editalTxt=await readAny(editalFile.files[0]);
 
         const limit=(s,m)=> s.length>m ? (s.slice(0,m)+'... [truncado]') : s;
 
-        const fichaRaw=limit(fichaTxt,60000);
-        const editalRaw=limit(editalTxt,60000);
-        const ctxRaw=limit(ctx,4000);
-        const oqRaw=limit(oq,4000);
+        // versão para lógica interna (extrações / filtros)
+        const fichaLogic=limit(sanitize(fichaTxt),60000);
+        const editalLogic=limit(sanitize(editalTxt),60000);
+        const ctxLogic=limit(sanitize(ctxRaw),4000);
+        const oqLogic=limit(sanitize(oqRaw),4000);
+
+        // versão segura para interpolar no JSON do Make
+        const fichaSafe=limit(safeForJsonInline(fichaTxt),60000);
+        const editalSafe=limit(safeForJsonInline(editalTxt),60000);
+        const ctxSafe=limit(safeForJsonInline(ctxRaw),4000);
+        const oqSafe=limit(safeForJsonInline(oqRaw),4000);
 
         const payload={
-          ficha:buildInstructionBlock('FICHA DE IDENTIFICAÇÃO',fichaRaw),
-          edital:buildInstructionBlock('EDITAL',editalRaw),
-          contexto:buildInstructionBlock('CONTEXTO',ctxRaw),
-          o_que_queremos_fazer:buildInstructionBlock('O QUE QUEREMOS FAZER',oqRaw)
+          ficha:buildInstructionBlock('FICHA DE IDENTIFICAÇÃO',fichaSafe),
+          edital:buildInstructionBlock('EDITAL',editalSafe),
+          contexto:buildInstructionBlock('CONTEXTO',ctxSafe),
+          o_que_queremos_fazer:buildInstructionBlock('O QUE QUEREMOS FAZER',oqSafe)
         };
 
         statusEl.textContent='Enviando para processamento...';
@@ -388,7 +412,7 @@
         statusEl.textContent='Interpretando resposta...';
         const parsed=parseClaude(text);
 
-        const safe=normalizeUs(parsed,ctxRaw,oqRaw,editalRaw,fichaRaw);
+        const safe=normalizeUs(parsed,ctxLogic,oqLogic,editalLogic,fichaLogic);
 
         statusEl.textContent='Gerando DOCX...';
         const doc=makeDocx(safe);
@@ -409,6 +433,7 @@
   </script>
 </body>
 </html>
+
 
 
 
