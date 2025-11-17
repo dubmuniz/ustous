@@ -128,7 +128,7 @@
     function extractPartner(edital){
       const txt=(edital||'').toLowerCase();
       const hits=[...txt.matchAll(/\b(fundação oswaldo cruz|fiocruz|national geographic|banco mundial|unesco|unicef|pnud|giz|bid|bndes|ministério [a-zçãé ]+)\b/gi)];
-      return hits.length? capitalize(hits[0][0]) : '';
+      return hits.length? smartTitleCase(hits[0][0]) : '';
     }
     function extractGrant(edital){
       const m=(edital||'').match(/(R\$\s?[\d\.\,]+|\bUS\$?\s?[\d\.\,]+|€\s?[\d\.\,]+)\s*(mil(hões)?|k)?/i);
@@ -142,19 +142,18 @@
       const m=(edital||'').match(/\b(\d{1,2}\/\d{1,2}\/\d{2,4}|\d{1,2}\s+de\s+\w+\s+de\s+\d{4})\b/i);
       return m? m[0] : '';
     }
-    function summarizeCall(edital){
-      const t=sanitize(edital||'').split(' ').slice(0,180).join(' ');
-      return t || 'Resumo do edital com base no arquivo enviado.';
-    }
-    function partnerWants(edital){
-      const txt=sanitize(edital||'');
-      const cand=(txt.match(/(objetivo|finalidade|visa|busca|prop[oó]sito)[^\.]{40,200}\./i)||[])[0];
-      if(cand) return cand;
-      return 'O parceiro busca propostas alinhadas ao edital, com coerência entre problema, estratégia, orçamento e resultados.';
-    }
-    function capitalize(s){ return s? s.replace(/\b\p{L}/gu,c=>c.toUpperCase()) : s; }
 
-    // Evita usar o texto bruto de entrada como saída literal
+    function smartTitleCase(str){
+      if(!str) return '';
+      const lower=str.toLowerCase();
+      const small=['de','da','do','das','dos','e','em','para','no','na','nos','nas','ao','aos','às','com'];
+      return lower.split(/\s+/).map((w,i)=>{
+        if(i>0 && small.includes(w)) return w;
+        return w.charAt(0).toUpperCase()+w.slice(1);
+      }).join(' ');
+    }
+
+    // Remove frases LONGAS que sejam cópia literal de algum dos textos de entrada
     function removeCopies(text,sources){
       let t=sanitize(text);
       if(!t) return '';
@@ -165,124 +164,49 @@
       for(const sent of sentences){
         const sTrim=sent.trim();
         if(!sTrim) continue;
-        if(sTrim.length<40){
+        if(sTrim.length<80){
           kept.push(sTrim);
           continue;
         }
         const norm=sTrim.toLowerCase();
         if(joined.includes(norm)){
-          continue; // descarta frases iguais às de entrada
+          continue;
         }
         kept.push(sTrim);
       }
       return kept.join(' ').trim();
     }
 
-    // Expansão mínima: usa o que vier da IA, sem acrescentar frases genéricas
-    function expandText(base,fallback){
-      const main=sanitize(base);
-      if(main) return main;
-      const fb=sanitize(fallback);
-      return fb || '';
-    }
-
-    // Fallbacks curtos e variáveis, para não ficar com cara de texto padrão
-    function randomFallback(section){
-      const pool={
-        background:[
-          'O contexto será detalhado em diálogo com a equipe, tomando a ficha e o edital como referência.',
-          'Este item será refinado a partir da leitura conjunta da ficha, do edital e das trocas com o time de projeto.'
-        ],
-        summary_call:[
-          'O resumo do edital será consolidado internamente com base na versão oficial do chamamento.',
-          'Este resumo será ajustado na próxima rodada, após leitura atenta do edital completo.'
-        ],
-        partner_wants:[
-          'As expectativas do parceiro serão consolidadas a partir da análise comparada do edital e do portfólio da organização.',
-          'A leitura fina do edital definirá com mais precisão o que o parceiro espera das propostas.'
-        ],
-        general_description:[
-          'A descrição geral da proposta será finalizada após nova iteração sobre estratégia, público e resultados.',
-          'O desenho final da intervenção será construído em conjunto com a equipe responsável pela implementação.'
-        ],
-        age_gender:[
-          'O recorte de idade e gênero será ajustado conforme o diálogo com escolas, comunidades e o edital.',
-          'O desenho de participação por faixa etária e gênero será lapidado com base nas diretrizes da chamada.'
-        ],
-        training_how:[
-          'O desenho das formações será detalhado em um plano pedagógico próprio do projeto.',
-          'As formações serão descritas em um plano de trabalho específico, integrando metodologias ativas e acompanhamento.'
-        ],
-        main_activities:[
-          'As atividades principais serão organizadas em um quadro sintético próprio, alinhado ao cronograma.',
-          'O detalhamento das atividades será feito a partir do planejamento técnico junto à equipe de campo.'
-        ],
-        people_should_do:[
-          'As responsabilidades das pessoas envolvidas serão definidas em um plano operacional e de governança.',
-          'As funções do público participante serão descritas com mais precisão em instrumentos internos do projeto.'
-        ],
-        organize_productive_unit:[
-          'A organização da unidade produtiva será detalhada em fluxos e organogramas específicos do projeto.',
-          'O arranjo produtivo será estruturado em um plano de gestão que descreve etapas, fluxos e responsabilidades.'
-        ],
-        organize_people:[
-          'A governança e a organização da equipe serão aprofundadas em um documento próprio de gestão.',
-          'A estrutura de papéis e instâncias de decisão será desenhada em conjunto com a coordenação da iniciativa.'
-        ],
-        economy:[
-          'A síntese do orçamento será apresentada em planilha específica, com linhas, fontes e contrapartidas.',
-          'A estrutura orçamentária será consolidada em um quadro à parte, vinculado aos resultados esperados.'
-        ],
-        technical_instructions:[
-          'As instruções técnicas serão definidas conforme protocolos internos e exigências do edital.',
-          'Os procedimentos técnicos serão organizados em anexos específicos, com padrões e checklists.'
-        ]
-      };
-      const arr=pool[section]||['Este item será ajustado em iterações seguintes do texto.'];
-      return arr[Math.floor(Math.random()*arr.length)];
-    }
-
     function normalizeUs(data,contexto,oque,edital,ficha){
       const us=(data&&data.us_to_us)?data.us_to_us:{};
-      const partner=sanitize(us.partner||extractPartner(edital)||'Parceiro');
+      const partnerRaw=sanitize(us.partner||extractPartner(edital)||'Parceiro');
+      const partner=smartTitleCase(partnerRaw);
+
       const grant=sanitize(us.grant_size||extractGrant(edital)||'A definir conforme edital');
       const timeframe=sanitize(us.timeframe||extractTimeframe(edital));
       const deadline=sanitize(us.deadline||extractDeadline(edital));
 
       const sources=[contexto,oque,edital,ficha];
 
-      const backgroundRaw=expandText(us.background,contexto);
-      const summary_callRaw=expandText(us.summary_call,summarizeCall(edital));
-      const partner_wantsRaw=expandText(us.partner_wants,partnerWants(edital));
-      const general_descriptionRaw=expandText(us.general_description,oque);
-      const age_genderRaw=sanitize(us.age_gender||'');
-      const training_howRaw=expandText(us.training_how,'');
+      const background=removeCopies(sanitize(us.background||''),sources);
+      const summary_call=removeCopies(sanitize(us.summary_call||''),sources);
+      const partner_wants_txt=removeCopies(sanitize(us.partner_wants||''),sources);
+      const general_description=removeCopies(sanitize(us.general_description||''),sources);
+      const age_gender=removeCopies(sanitize(us.age_gender||''),sources);
+      const training_how=removeCopies(sanitize(us.training_how||''),sources);
 
-      const main_activitiesRaw=Array.isArray(us.main_activities)&&us.main_activities.length
-        ? us.main_activities.map(sanitize)
-        : [];
+      let main_activities=[];
+      if(Array.isArray(us.main_activities) && us.main_activities.length){
+        main_activities=us.main_activities
+          .map(x=>removeCopies(sanitize(x),sources))
+          .filter(Boolean);
+      }
 
-      const people_should_doRaw=expandText(us.people_should_do,'');
-      const organize_productive_unitRaw=expandText(us.organize_productive_unit,'');
-      const organize_peopleRaw=expandText(us.organize_people,'');
-      const economyRaw=expandText(us.economy,'');
-      const technical_instructionsRaw=expandText(us.technical_instructions,'');
-
-      const background=removeCopies(backgroundRaw,sources) || randomFallback('background');
-      const summary_call=removeCopies(summary_callRaw,sources) || randomFallback('summary_call');
-      const partner_wants_txt=removeCopies(partner_wantsRaw,sources) || randomFallback('partner_wants');
-      const general_description=removeCopies(general_descriptionRaw,sources) || randomFallback('general_description');
-      const age_gender=removeCopies(age_genderRaw,sources) || randomFallback('age_gender');
-      const training_how=removeCopies(training_howRaw,sources) || randomFallback('training_how');
-      const main_activities=(main_activitiesRaw.length
-        ? main_activitiesRaw.map(t=>removeCopies(t,sources)).filter(Boolean)
-        : []).slice(0,10); // evita listas enormes se vierem da IA
-
-      const people_should_do=removeCopies(people_should_doRaw,sources) || randomFallback('people_should_do');
-      const organize_productive_unit=removeCopies(organize_productive_unitRaw,sources) || randomFallback('organize_productive_unit');
-      const organize_people=removeCopies(organize_peopleRaw,sources) || randomFallback('organize_people');
-      const economy=removeCopies(economyRaw,sources) || randomFallback('economy');
-      const technical_instructions=removeCopies(technical_instructionsRaw,sources) || randomFallback('technical_instructions');
+      const people_should_do=removeCopies(sanitize(us.people_should_do||''),sources);
+      const organize_productive_unit=removeCopies(sanitize(us.organize_productive_unit||''),sources);
+      const organize_people=removeCopies(sanitize(us.organize_people||''),sources);
+      const economy=removeCopies(sanitize(us.economy||''),sources);
+      const technical_instructions=removeCopies(sanitize(us.technical_instructions||''),sources);
 
       return {
         us_to_us:{
@@ -399,14 +323,16 @@
       }
     });
 
-    // Constrói instruções embutidas nos campos enviados para o Claude, sem mudar o formato do body
     function buildInstructionBlock(label,content){
       if(!content) return '';
       return [
         `INSTRUÇÃO PARA A IA (${label}):`,
-        `Use o texto abaixo apenas como referência e contexto.`,
-        `Reescreva tudo com suas próprias palavras, sem copiar frases literalmente,`,
-        `gerando um texto específico para esta oportunidade e consistente com o restante do documento.`,
+        `Use o texto abaixo apenas como fonte de informação e contexto.`,
+        `Você NÃO deve copiar nem reescrever literalmente nenhuma frase do texto abaixo.`,
+        `Produza conteúdo totalmente original, em estilo de proposta para chamadas de organizações do terceiro setor, com linguagem formal e bem articulada.`,
+        `Cada seção do objeto "us_to_us" que você gerar deve conter pelo menos um parágrafo consistente (mínimo de 80 a 120 palavras), com ideias completas, conectadas e específicas para esta oportunidade.`,
+        `Evite frases genéricas que poderiam servir para qualquer edital e evite repetir estruturas prontas entre seções ou entre execuções desta ferramenta.`,
+        `Se a sua primeira formulação ficar muito curta ou genérica, reescreva e expanda até atingir a densidade e a especificidade necessárias, sempre mantendo coerência com o restante do documento.`,
         '',
         content
       ].join(' ');
@@ -435,13 +361,11 @@
 
         const limit=(s,m)=> s.length>m ? (s.slice(0,m)+'... [truncado]') : s;
 
-        // Versões cruas usadas para checagem de cópia e extrações
         const fichaRaw=limit(fichaTxt,60000);
         const editalRaw=limit(editalTxt,60000);
         const ctxRaw=limit(ctx,4000);
         const oqRaw=limit(oq,4000);
 
-        // Versões com instrução embutida, enviadas para o Claude
         const payload={
           ficha:buildInstructionBlock('FICHA DE IDENTIFICAÇÃO',fichaRaw),
           edital:buildInstructionBlock('EDITAL',editalRaw),
@@ -464,7 +388,6 @@
         statusEl.textContent='Interpretando resposta...';
         const parsed=parseClaude(text);
 
-        // Usa as versões cruas como base para checar cópias e extrair info
         const safe=normalizeUs(parsed,ctxRaw,oqRaw,editalRaw,fichaRaw);
 
         statusEl.textContent='Gerando DOCX...';
@@ -486,7 +409,6 @@
   </script>
 </body>
 </html>
-
 
 
 
