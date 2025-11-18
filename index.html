@@ -25,7 +25,7 @@
     input,textarea{width:100%;border:1px solid #d8dee4;border-radius:8px;padding:12px;font:inherit}
     textarea{min-height:130px;resize:vertical}
     .file-info{background:#f0f7f4;border-left:4px solid var(--green);padding:10px;border-radius:6px;margin-top:8px;font-size:13px;display:none}
-    button{background:var(--green);color:#fff;border:0;border-radius:10px;padding:12px 20px;font-weight:600;cursor:pointer;font-size:16px;width:100%}
+    button{background:var(--green);color:#fff;border:0;border-radius:12px;padding:12px 20px;font-weight:600;cursor:pointer;font-size:16px;width:100%}
     button:disabled{opacity:.6;cursor:not-allowed}
     .status{min-height:22px;color:var(--muted);margin:12px 0 0;font-size:14px}
     .status.error{color:#d32f2f}
@@ -72,6 +72,7 @@
   <script>
     const WEBHOOK_URL='https://hook.us2.make.com/7whb778vlmgg9yst3o5ua2cq4g4dh654';
     const $=(s)=>document.querySelector(s);
+
     const sanitize=(s)=>(s==null?'':String(s)
       .replace(/\uFEFF/g,'')
       .replace(/[\u0000-\u001F\u007F-\u009F]/g,'')
@@ -80,11 +81,11 @@
       .trim()
     );
 
-    // deixa o texto seguro para ser interpolado em uma string JSON no Make
+    // Deixa seguro para interpolar em string JSON no Make (evita quebrar o JSON do Claude)
     function safeForJsonInline(s){
       return sanitize(s)
-        .replace(/\\/g,'/')  // evita barras invertidas que virem escapes quebrados
-        .replace(/"/g,"'");  // troca aspas duplas por simples
+        .replace(/\\/g,'/')   // evita barras invertidas virarem escapes quebrados
+        .replace(/"/g,"'");   // evita fechar string JSON
     }
 
     async function readPDF(file){
@@ -131,13 +132,35 @@
       if(t.endsWith('```')) t=t.slice(0,-3);
       return t.trim();
     }
+
     function parseClaude(raw){
       let t=stripFences(raw)
         .replace(/\uFEFF/g,'')
         .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g,'');
-      const i=t.indexOf('{"us_to_us"');
-      if(i>0) t=t.slice(i);
-      try{ return JSON.parse(t); }catch{ return null; }
+
+      try{
+        return JSON.parse(t);
+      }catch{}
+
+      const first=t.indexOf('{');
+      const last=t.lastIndexOf('}');
+      if(first>=0 && last>first){
+        const slice=t.slice(first,last+1);
+        try{
+          return JSON.parse(slice);
+        }catch{}
+      }
+      return null;
+    }
+
+    function smartTitleCase(str){
+      if(!str) return '';
+      const lower=str.toLowerCase();
+      const small=['de','da','do','das','dos','e','em','para','no','na','nos','nas','ao','aos','às','com'];
+      return lower.split(/\s+/).map((w,i)=>{
+        if(i>0 && small.includes(w)) return w;
+        return w.charAt(0).toUpperCase()+w.slice(1);
+      }).join(' ');
     }
 
     function extractPartner(edital){
@@ -158,38 +181,6 @@
       return m? m[0] : '';
     }
 
-    function smartTitleCase(str){
-      if(!str) return '';
-      const lower=str.toLowerCase();
-      const small=['de','da','do','das','dos','e','em','para','no','na','nos','nas','ao','aos','às','com'];
-      return lower.split(/\s+/).map((w,i)=>{
-        if(i>0 && small.includes(w)) return w;
-        return w.charAt(0).toUpperCase()+w.slice(1);
-      }).join(' ');
-    }
-
-    // remove frases muito longas que sejam cópia literal de algum dos textos de entrada
-    function removeCopies(text,sources){
-      let t=sanitize(text);
-      if(!t) return '';
-      const joined=sanitize(sources.filter(Boolean).join(' ')).toLowerCase();
-      if(!joined) return t;
-      const sentences=t.split(/(?<=[\.\!\?])\s+/);
-      const kept=[];
-      for(const sent of sentences){
-        const sTrim=sent.trim();
-        if(!sTrim) continue;
-        if(sTrim.length<80){
-          kept.push(sTrim);
-          continue;
-        }
-        const norm=sTrim.toLowerCase();
-        if(joined.includes(norm)) continue;
-        kept.push(sTrim);
-      }
-      return kept.join(' ').trim();
-    }
-
     function normalizeUs(data,contexto,oque,edital,ficha){
       const us=(data&&data.us_to_us)?data.us_to_us:{};
       const partnerRaw=sanitize(us.partner||extractPartner(edital)||'Parceiro');
@@ -199,28 +190,6 @@
       const timeframe=sanitize(us.timeframe||extractTimeframe(edital));
       const deadline=sanitize(us.deadline||extractDeadline(edital));
 
-      const sources=[contexto,oque,edital,ficha];
-
-      const background=removeCopies(us.background||'',sources);
-      const summary_call=removeCopies(us.summary_call||'',sources);
-      const partner_wants_txt=removeCopies(us.partner_wants||'',sources);
-      const general_description=removeCopies(us.general_description||'',sources);
-      const age_gender=removeCopies(us.age_gender||'',sources);
-      const training_how=removeCopies(us.training_how||'',sources);
-
-      let main_activities=[];
-      if(Array.isArray(us.main_activities) && us.main_activities.length){
-        main_activities=us.main_activities
-          .map(x=>removeCopies(x,sources))
-          .filter(Boolean);
-      }
-
-      const people_should_do=removeCopies(us.people_should_do||'',sources);
-      const organize_productive_unit=removeCopies(us.organize_productive_unit||'',sources);
-      const organize_people=removeCopies(us.organize_people||'',sources);
-      const economy=removeCopies(us.economy||'',sources);
-      const technical_instructions=removeCopies(us.technical_instructions||'',sources);
-
       return {
         us_to_us:{
           meta:{filename:'us_to_us',partner},
@@ -228,18 +197,20 @@
           grant_size:grant,
           timeframe,
           deadline,
-          background,
-          summary_call,
-          partner_wants:partner_wants_txt,
-          general_description,
-          age_gender,
-          training_how,
-          main_activities,
-          people_should_do,
-          organize_productive_unit,
-          organize_people,
-          economy,
-          technical_instructions
+          background:sanitize(us.background||''),
+          summary_call:sanitize(us.summary_call||''),
+          partner_wants:sanitize(us.partner_wants||''),
+          general_description:sanitize(us.general_description||''),
+          age_gender:sanitize(us.age_gender||''),
+          training_how:sanitize(us.training_how||''),
+          main_activities:Array.isArray(us.main_activities)
+            ? us.main_activities.map(x=>sanitize(x||'')).filter(Boolean)
+            : [],
+          people_should_do:sanitize(us.people_should_do||''),
+          organize_productive_unit:sanitize(us.organize_productive_unit||''),
+          organize_people:sanitize(us.organize_people||''),
+          economy:sanitize(us.economy||''),
+          technical_instructions:sanitize(us.technical_instructions||'')
         }
       };
     }
@@ -338,21 +309,6 @@
       }
     });
 
-    function buildInstructionBlock(label,contentSafe){
-      if(!contentSafe) return '';
-      return [
-        `INSTRUÇÃO PARA A IA (${label})`,
-        `Use o texto abaixo apenas como fonte de informação e contexto.`,
-        `Você não deve copiar nem reescrever literalmente nenhuma frase do texto abaixo.`,
-        `Produza conteúdo totalmente original, em estilo de proposta para chamadas de organizações do terceiro setor, com linguagem formal e bem articulada.`,
-        `Cada seção do objeto us_to_us que você gerar deve conter pelo menos um parágrafo consistente (mínimo de 80 a 120 palavras), com ideias completas, conectadas e específicas para esta oportunidade.`,
-        `Evite frases genéricas que poderiam servir para qualquer edital e evite repetir estruturas prontas entre seções ou entre execuções desta ferramenta.`,
-        `Se a sua primeira formulação ficar muito curta ou genérica, reescreva e expanda até atingir a densidade e a especificidade necessárias, sempre mantendo coerência com o restante do documento.`,
-        '',
-        contentSafe
-      ].join(' ');
-    }
-
     document.getElementById('usForm').addEventListener('submit',async (e)=>{
       e.preventDefault();
       debugEl.style.display='none';
@@ -360,10 +316,10 @@
       statusEl.classList.remove('error','success');
       statusEl.textContent='';
 
-      const ctxRaw=$('#contexto').value;
-      const oqRaw=$('#oque').value;
+      const ctxVal=$('#contexto').value;
+      const oqVal=$('#oque').value;
 
-      if(!fichaFile.files[0]||!editalFile.files[0]||!ctxRaw||!oqRaw){
+      if(!fichaFile.files[0]||!editalFile.files[0]||!ctxVal||!oqVal){
         statusEl.textContent='Preencha todos os campos e anexe os arquivos requeridos.';
         statusEl.classList.add('error');
         return;
@@ -378,23 +334,23 @@
 
         const limit=(s,m)=> s.length>m ? (s.slice(0,m)+'... [truncado]') : s;
 
-        // versão para lógica interna (extrações / filtros)
+        // lógica interna (para extrações)
         const fichaLogic=limit(sanitize(fichaTxt),60000);
         const editalLogic=limit(sanitize(editalTxt),60000);
-        const ctxLogic=limit(sanitize(ctxRaw),4000);
-        const oqLogic=limit(sanitize(oqRaw),4000);
+        const ctxLogic=limit(sanitize(ctxVal),4000);
+        const oqLogic=limit(sanitize(oqVal),4000);
 
-        // versão segura para interpolar no JSON do Make
+        // versão segura para ir ao Make / Claude
         const fichaSafe=limit(safeForJsonInline(fichaTxt),60000);
         const editalSafe=limit(safeForJsonInline(editalTxt),60000);
-        const ctxSafe=limit(safeForJsonInline(ctxRaw),4000);
-        const oqSafe=limit(safeForJsonInline(oqRaw),4000);
+        const ctxSafe=limit(safeForJsonInline(ctxVal),4000);
+        const oqSafe=limit(safeForJsonInline(oqVal),4000);
 
         const payload={
-          ficha:buildInstructionBlock('FICHA DE IDENTIFICAÇÃO',fichaSafe),
-          edital:buildInstructionBlock('EDITAL',editalSafe),
-          contexto:buildInstructionBlock('CONTEXTO',ctxSafe),
-          o_que_queremos_fazer:buildInstructionBlock('O QUE QUEREMOS FAZER',oqSafe)
+          ficha:fichaSafe,
+          edital:editalSafe,
+          contexto:ctxSafe,
+          o_que_queremos_fazer:oqSafe
         };
 
         statusEl.textContent='Enviando para processamento...';
@@ -412,6 +368,15 @@
         statusEl.textContent='Interpretando resposta...';
         const parsed=parseClaude(text);
 
+        if(!parsed || !parsed.us_to_us){
+          statusEl.textContent='Erro: resposta da IA não contém o objeto us_to_us esperado.';
+          statusEl.classList.add('error');
+          debugEl.textContent='Resposta bruta do webhook:\n\n'+text.slice(0,4000);
+          debugEl.style.display='block';
+          submitBtn.disabled=false;
+          return;
+        }
+
         const safe=normalizeUs(parsed,ctxLogic,oqLogic,editalLogic,fichaLogic);
 
         statusEl.textContent='Gerando DOCX...';
@@ -424,7 +389,9 @@
       }catch(err){
         statusEl.textContent='Erro: '+err.message;
         statusEl.classList.add('error');
-        debugEl.textContent=(err&&err.stack)?err.stack:String(err);
+        debugEl.textContent=(err&&err.stack)
+          ? String(err.stack).slice(0,4000)
+          : String(err).slice(0,4000);
         debugEl.style.display='block';
       }finally{
         submitBtn.disabled=false;
@@ -433,6 +400,7 @@
   </script>
 </body>
 </html>
+
 
 
 
